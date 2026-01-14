@@ -141,10 +141,6 @@ type
     function colGetCount : Integer;
     function colGetEfficiency : Integer;
 
-    procedure ForEachPointer(Action : TIteratePointerFunc; OtherData : pointer);
-      override;
-    function StoresPointers : boolean;
-      override;
   {.Z-}
   public
     constructor Create(PageElements : Integer); virtual;
@@ -152,15 +148,8 @@ type
     destructor Destroy; override;
       {-Free a collection}
 
-    procedure LoadFromStream(S : TStream); override;
-      {-Load a collection's data from a stream}
-    procedure StoreToStream(S : TStream); override;
-      {-Write a collection and its data to a stream}
-
     procedure Clear; override;
       {-Deallocate all pages and free all items}
-    procedure Assign(Source: TPersistent); override;
-      {-Assign another container's contents to this one}
     procedure Pack;
       {-Squeeze collection elements into the least memory possible}
 
@@ -219,11 +208,7 @@ type
     procedure scSetDuplicates(D : Boolean);
   {.Z-}
   public
-    procedure LoadFromStream(S : TStream); override;
-      {-Load a sorted collection's data from a stream}
-    procedure StoreToStream(S : TStream); override;
-     {-Write a collection and its data to a stream}
-
+    function DoCompare(Data1, Data2 : Pointer) : Integer;
     function IndexOf(Data : Pointer) : Integer; override;
       {-Return the index of the first item with given data}
     procedure Insert(Data : Pointer); override;
@@ -263,24 +248,6 @@ end;
 
 {----------------------------------------------------------------------}
 
-procedure TStCollection.Assign(Source: TPersistent);
-  begin
-    {$IFDEF ThreadSafe}
-    EnterCS;
-    try
-    {$ENDIF}
-      {The only containers that we allow to be assigned to a collection are
-         - a SysTools linked list (TStList)
-         - a SysTools binary search tree (TStTree)
-         - another SysTools collection (TStCollection, TStSortedCollection)}
-      if not AssignPointers(Source, AssignData) then
-        inherited Assign(Source);
-    {$IFDEF ThreadSafe}
-    finally
-      LeaveCS;
-    end;{try..finally}
-    {$ENDIF}
-  end;
 
 function TStCollection.At(Index : Integer) : Pointer;
 var
@@ -690,37 +657,6 @@ begin
 {$ENDIF}
 end;
 
-procedure TStCollection.ForEachPointer(Action : TIteratePointerFunc;
-                                       OtherData : pointer);
-var
-  I : Integer;
-  N : TPageDescriptor;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    N := TPageDescriptor(colPageList.Head);
-    while Assigned(N) do begin
-      with N do
-        for I := 0 to pdCount-1 do
-          if (pdPage^[I] <> nil) then
-            if not Action(Self, pdPage^[I], OtherData) then begin
-              Exit;
-            end;
-      N := TPageDescriptor(N.FNext);
-    end;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
-
-function TStCollection.StoresPointers : boolean;
-begin
-  Result := true;
-end;
 
 constructor TStCollection.Create(PageElements : Integer);
 begin
@@ -901,80 +837,6 @@ begin
 {$ENDIF}
 end;
 
-procedure TStCollection.LoadFromStream(S : TStream);
-var
-  Data         : pointer;
-  Reader       : TReader;
-  PageElements : integer;
-  Index        : Integer;
-  StreamedClass : TPersistentClass;
-  StreamedClassName : string;
-begin
-  Clear;
-  Reader := TReader.Create(S, 1024);
-  try
-    with Reader do
-      begin
-        StreamedClassName := ReadString;
-        StreamedClass := GetClass(StreamedClassName);
-        if (StreamedClass = nil) then
-          RaiseContainerErrorFmt(stscUnknownClass, [StreamedClassName]);
-        if (not IsOrInheritsFrom(StreamedClass, Self.ClassType)) or
-           (not IsOrInheritsFrom(TStCollection, StreamedClass)) then
-          RaiseContainerError(stscWrongClass);
-        PageElements := ReadInteger;
-        if (PageElements <> colPageElements) then
-          begin
-            colPageList.Clear;
-            colPageElements := PageElements;
-            colPageList.Append(Pointer(colPageElements));
-            colCachePage := TPageDescriptor(colPageList.Head);
-          end;
-        ReadListBegin;
-        while not EndOfList do
-          begin
-            Index := ReadInteger;
-            Data := DoLoadData(Reader);
-            AtPut(Index, Data);
-          end;
-        ReadListEnd;
-      end;
-  finally
-    Reader.Free;
-  end;
-end;
-
-procedure TStCollection.StoreToStream(S : TStream);
-var
-  Writer : TWriter;
-  N      : TPageDescriptor;
-  i      : integer;
-begin
-  Writer := TWriter.Create(S, 1024);
-  try
-    with Writer do
-      begin
-        WriteString(Self.ClassName);
-        WriteInteger(colPageElements);
-        WriteListBegin;
-        N := TPageDescriptor(colPageList.Head);
-        while Assigned(N) do
-          begin
-            with N do
-              for i := 0 to pdCount-1 do
-                if (pdPage^[i] <> nil) then
-                  begin
-                    WriteInteger(pdStart + i);
-                    DoStoreData(Writer, pdPage^[i]);
-                  end;
-            N := TPageDescriptor(N.FNext);
-          end;
-        WriteListEnd;
-      end;
-  finally
-    Writer.Free;
-  end;
-end;
 
 {----------------------------------------------------------------------}
 
@@ -1133,81 +995,17 @@ begin
       FDuplicates := False;
 end;
 
-procedure TStSortedCollection.LoadFromStream(S : TStream);
-var
-  Data         : pointer;
-  Reader       : TReader;
-  PageElements : integer;
-  StreamedClass : TPersistentClass;
-  StreamedClassName : string;
+
+function TStSortedCollection.DoCompare(Data1, Data2 : Pointer) : Integer;
 begin
-  Clear;
-  Reader := TReader.Create(S, 1024);
-  try
-    with Reader do
-      begin
-        StreamedClassName := ReadString;
-        StreamedClass := GetClass(StreamedClassName);
-        if (StreamedClass = nil) then
-          RaiseContainerErrorFmt(stscUnknownClass, [StreamedClassName]);
-        if (not IsOrInheritsFrom(StreamedClass, Self.ClassType)) or
-           (not IsOrInheritsFrom(TStCollection, StreamedClass)) then
-          RaiseContainerError(stscWrongClass);
-        PageElements := ReadInteger;
-        if (PageElements <> colPageElements) then
-          begin
-            colPageList.Clear;
-            colPageElements := PageElements;
-            colPageList.Append(Pointer(colPageElements));
-            colCachePage := TPageDescriptor(colPageList.Head);
-          end;
-      FDuplicates := ReadBoolean;
-        ReadListBegin;
-        while not EndOfList do
-          begin
-            ReadInteger; {read & discard index number}
-            Data := DoLoadData(Reader);
-            Insert(Data);
-          end;
-        ReadListEnd;
-      end;
-  finally
-    Reader.Free;
-  end;
+  Result := 0;
+  if Assigned(FOnCompare) then
+    FOnCompare(Self, Data1, Data2, Result)
+  else if Assigned(FCompare) then
+    Result := FCompare(Data1, Data2);
 end;
 
-procedure TStSortedCollection.StoreToStream(S : TStream);
-var
-  Writer : TWriter;
-  N      : TPageDescriptor;
-  i      : integer;
-begin
-  Writer := TWriter.Create(S, 1024);
-  try
-    with Writer do
-      begin
-        WriteString(Self.ClassName);
-        WriteInteger(colPageElements);
-        WriteBoolean(FDuplicates);
-        WriteListBegin;
-        N := TPageDescriptor(colPageList.Head);
-        while Assigned(N) do
-          begin
-            with N do
-              for i := 0 to pdCount-1 do
-                if (pdPage^[i] <> nil) then
-                  begin
-                    WriteInteger(pdStart + i);
-                    DoStoreData(Writer, pdPage^[i]);
-                  end;
-            N := TPageDescriptor(N.FNext);
-          end;
-        WriteListEnd;
-      end;
-  finally
-    Writer.Free;
-  end;
-end;
+
 
 
 end.

@@ -72,7 +72,8 @@ interface
 
 uses
   Windows, SysUtils, Classes,
-  StConst, StBase;
+  StConst, StBase,
+  System.Generics.Defaults;
 
 type
   TStDictNode = class(TStNode)
@@ -93,165 +94,124 @@ type
          read GetName;
   end;
 
-{.Z+}
-  TSymbolArray = array[0..(StMaxBlockSize div SizeOf(TStDictNode))-1] of TStDictNode;
-  PSymbolArray = ^TSymbolArray;
-{.Z-}
 
-  TDictHashFunc = function(const S : string) : Integer;
 
-  TStDictionary = class(TStContainer)
+
+  TStBaseDictionary = class(TStContainer)
+  end;
+
+  TStDictionary = class(TStBaseDictionary)
+  private
+  {$IFDEF ThreadSafe}
+  class var ClassCritSect : TRTLCriticalSection;
+  {$ENDIF}
+  public
+    type
+      TSymbolArray = array[0..(StMaxBlockSize div SizeOf(TStDictNode))-1] of TStDictNode;
+      PSymbolArray = ^TSymbolArray;
+      TIterateFunc<TOtherData> = function(Container : TStDictionary; Node : TStDictNode; OtherData : TOtherData) : Boolean of object;
+  public
+    class procedure EnterClassCS;
+    class procedure LeaveClassCS;
+    class function DestroyNode(Container : TStDictionary; Node : TStDictNode; OtherData : Pointer) : Boolean;
+    class function FindNodeData(Container : TStDictionary; Node : TStDictNode; OtherData : Pointer) : Boolean;
+    class function JoinNode(Container : TStDictionary; Node : TStDictNode; OtherData : TStDictionary) : Boolean;
+  private
+    function CalculateHash(const s: string): integer;
 {.Z+}
   protected
+    FComparer: System.Generics.Defaults.IComparer<String>;
+    FEqualityComparer: System.Generics.Defaults.IEqualityComparer<String>;
     {property instance variables}
     FHashSize : Integer;            {Bins in symbol array}
-    FEqual    : TStringCompareFunc; {String compare function}
-    FHash     : TDictHashFunc;
 
-    {event variables}
-    FOnEqual  : TStStringCompareEvent;
+
+
+
 
     {private instance variables}
     dySymbols : PSymbolArray;     {Pointer to symbol array}
     dyIgnoreDups : Boolean;       {Ignore duplicates during Join?}
 
-    {protected undocumented methods}
-    procedure dySetEqual(E : TStringCompareFunc);
-    procedure dySetHash(H : TDictHashFunc);
+
+
     procedure dySetHashSize(Size : Integer);
-    procedure dyFindNode(const Name : string; var H : Integer;
-                         var Prev, This : TStDictNode);
+    procedure dyFindNode(const Name : string; var H : Integer; var Prev, This : TStDictNode);
 {.Z-}
   public
+    class constructor create;
+    class destructor Destroy;
     constructor Create(AHashSize : Integer); virtual;
       {-Initialize an empty dictionary}
     destructor Destroy; override;
       {-Destroy a dictionary}
 
-    procedure LoadFromStream(S : TStream); override;
-      {-Read a dictionary and its data from a stream}
-    procedure StoreToStream(S : TStream); override;
-      {-Write a dictionary and its data to a stream}
 
     procedure Clear; override;
       {-Remove all nodes from container but leave it instantiated}
-    function DoEqual(const String1, String2 : string) : Integer;
-      virtual;
     function Exists(const Name : string; var Data : Pointer) : Boolean;
       {-Return True and the Data pointer if Name is in the dictionary}
     procedure Add(const Name : string; Data : Pointer);
       {-Add new Name and Data to the dictionary}
     procedure Delete(const Name : string);
       {-Delete a Name from the dictionary}
-    procedure GetItems(S : TStrings);
-      {-Fill the string list with all stored strings}
-    procedure SetItems(S : TStrings);
-      {-Fill the container with the strings and objects in S}
-    procedure Update(const Name : string; Data : Pointer);
-      {-Update the data for an existing element}
     function Find(Data : Pointer; var Name : string) : Boolean;
       {-Return True and the element Name that matches Data}
 
-    procedure Assign(Source: TPersistent); override;
-      {-Assign another container's contents to this one}
     procedure Join(D : TStDictionary; IgnoreDups : Boolean);
       {-Add dictionary D into this one and dispose D}
 
-    function Iterate(Action : TIterateFunc;
-                     OtherData : Pointer) : TStDictNode;
+    function Iterate<TOtherData>(Action : TIterateFunc<TOtherData>; OtherData : TOtherData) : TStDictNode;
       {-Call Action for all the nodes, returning the last node visited}
 
     function BinCount(H : Integer) : Integer;
       {-Return number of names in a hash bin (for testing)}
 
-    property Equal : TStringCompareFunc
-      read FEqual
-      write dySetEqual;
-
-    property Hash : TDictHashFunc
-      read FHash
-      write dySetHash;
-
     property HashSize : Integer
       read FHashSize
       write dySetHashSize;
 
-    property OnEqual : TStStringCompareEvent
-      read FOnEqual
-      write FOnEqual;
   end;
-
-
-function HashText(const S : string) : Integer;
-  {-Case-insensitive hash function that uses the current language driver}
-function HashStr(const S : string) : Integer;
-  {-Case-sensitive hash function}
-function ELFHashText(const S : string; Size : Integer) : Integer;
-  {-Case-insensitive ELF hash function that uses the current language driver}
-function ELFHashStr(const S : string; Size : Integer) : Integer;
-  {-Case-sensitive ELF hash function}
-
-
 implementation
 
-uses
-  System.Hash,
-  Generics.Defaults;
+class constructor TStDictionary.create;
+begin
+  {$IFDEF ThreadSafe}
+  Windows.InitializeCriticalSection(ClassCritSect);
+  {$ENDIF}
+end;
 
-{$IFDEF ThreadSafe}
-var
-  ClassCritSect : TRTLCriticalSection;
-{$ENDIF}
+class destructor TStDictionary.Destroy;
+begin
+  {$IFDEF ThreadSafe}
+  Windows.DeleteCriticalSection(ClassCritSect);
+  {$ENDIF}
+end;
 
-procedure EnterClassCS;
+class function TStDictionary.DestroyNode(Container : TStDictionary; Node : TStDictNode; OtherData : Pointer) : Boolean;
+begin
+  Container.DisposeNodeData(Node);
+  Node.Free;
+  Result := True;
+end;
+
+function TStDictionary.CalculateHash(const s: String): integer;
+begin
+  Result := FEqualityComparer.GetHashCode(s) and $7FFFFFFF mod FHashSize;
+end;
+
+class procedure TStDictionary.EnterClassCS;
 begin
 {$IFDEF ThreadSafe}
   EnterCriticalSection(ClassCritSect);
 {$ENDIF}
 end;
 
-procedure LeaveClassCS;
+class procedure TStDictionary.LeaveClassCS;
 begin
 {$IFDEF ThreadSafe}
   LeaveCriticalSection(ClassCritSect);
 {$ENDIF}
-end;
-
-
-{The following routine was extracted from LockBox and modified}
-function HashElf(const Buf;  BufSize : Integer) : Integer;
-var
-//  Bytes : TByteArray absolute Buf;                                   {!!.02}
-  Bytes : PByte;                                                       {!!.02}
-  I, X  : Integer;
-begin
-  Bytes := @Buf;                                                       {!!.02}
-  Result := 0;
-  for I := 0 to BufSize - 1 do begin
-    Result := (Result shl 4) + Ord(Bytes^);                            {!!.02}
-    Inc(Bytes);                                                        {!!.02}
-    X := Integer(Result and $F0000000);                                {!!.02}
-    if (X <> 0) then
-      Result := Result xor (X shr 24);
-    Result := Result and (not X);
-  end;
-end;
-
-function ELFHashText(const S : string; Size : Integer) : Integer;
-begin
-  Result := ELFHashStr(UpperCase(S), Size);
-end;
-
-function ELFHashStr(const S : string; Size : Integer) : Integer;
-begin
-  if S <> '' then
-  begin
-    Result := HashElf(S[1], Length(S) * SizeOf(Char)) mod Size;
-    if Result < 0 then
-      Inc(Result, Size);
-  end
-  else
-    Result := 0;
 end;
 
 constructor TStDictNode.CreateStr(const Name : string; AData : Pointer);
@@ -271,26 +231,14 @@ begin
   Result := dnName;
 end;
 
-function HashStr(const S : string) : Integer;
-begin
-  Result := THashBobJenkins.GetHashValue(S);
-end;
 
-function HashText(const S : string) : Integer;
-begin
-  Result := HashStr(UpperCase(S));
-end;
 
-function FindNodeData(Container : TStContainer;
-                      Node : TStNode;
-                      OtherData : Pointer) : Boolean; far;
+class function TStDictionary.FindNodeData(Container : TStDictionary; Node : TStDictNode; OtherData : Pointer) : Boolean;
 begin
   Result := (OtherData <> Node.Data);
 end;
 
-function JoinNode(Container : TStContainer;
-                  Node : TStNode;
-                  OtherData : Pointer) : Boolean; far;
+class function TStDictionary.JoinNode(Container : TStDictionary;Node : TStDictNode; OtherData : TStDictionary) : Boolean;
 var
   H : Integer;
   P, T : TStDictNode;
@@ -347,27 +295,6 @@ begin
 {$ENDIF}
 end;
 
-procedure TStDictionary.Assign(Source: TPersistent);
-  var
-    i : integer;
-  begin
-    {The only two containers that we allow to be assigned to a string
-     dictionary are (1) another string dictionary and (2) a Delphi string
-     list (TStrings)}
-    if (Source is TStDictionary) then
-      begin
-        Clear;
-        TStDictionary(Source).Iterate(AssignNode, Self);
-      end
-    else if (Source is TStrings) then
-      begin
-        Clear;
-        for i := 0 to pred(TStrings(Source).Count) do
-          Add(TStrings(Source).Strings[i], TStrings(Source).Objects[i]);
-      end
-    else
-      inherited Assign(Source);
-  end;
 
 function TStDictionary.BinCount(H : Integer) : Integer;
 var
@@ -399,7 +326,7 @@ begin
   try
 {$ENDIF}
     if FCount <> 0 then begin
-      Iterate(DestroyNode, nil);
+      Iterate<Pointer>(DestroyNode, nil);
       FCount := 0;
       FillChar(dySymbols^, Integer(FHashSize)*SizeOf(TStDictNode), 0);
     end;
@@ -413,9 +340,8 @@ end;
 constructor TStDictionary.Create(AHashSize : Integer);
 begin
   CreateContainer(TStDictNode, 0);
-  {FHashSize := 0;}
-  FEqual := CompareText;
-  FHash := HashText;
+  FComparer := System.Generics.Defaults.IComparer<String>(TComparer<String>._Default);
+  FEqualityComparer := System.Generics.Defaults.IEqualityComparer<String>(TEqualityComparer<String>._Default);
   HashSize := AHashSize;
 end;
 
@@ -454,14 +380,6 @@ begin
   inherited Destroy;
 end;
 
-function TStDictionary.DoEqual(const String1, String2 : string) : Integer;
-begin
-  Result := 0;
-  if Assigned(FOnEqual) then
-    FOnEqual(Self, String1, String2, Result)
-  else if Assigned(FEqual) then
-    Result := FEqual(String1, String2);
-end;
 
 procedure TStDictionary.dyFindNode(const Name : string; var H : Integer;
                                    var Prev, This : TStDictNode);
@@ -470,11 +388,11 @@ var
 begin
   Prev := nil;
   This := nil;
-  H := Hash(Name);
+  H := FEqualityComparer.GetHashCode(Name);
   T := dySymbols^[H];
   P := nil;
   while Assigned(T) do begin
-    if DoEqual(Name, T.dnName) = 0 then begin
+    if FComparer.Compare(Name, T.dnName) = 0 then begin
       Prev := P;
       This := T;
       Exit;
@@ -485,36 +403,6 @@ begin
 
   {Not found}
   This := nil;
-end;
-
-procedure TStDictionary.dySetEqual(E : TStringCompareFunc);
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    if Count = 0 then
-      FEqual := E;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
-
-procedure TStDictionary.dySetHash(H : TDictHashFunc);
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    if Count = 0 then
-      FHash := H;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
 end;
 
 procedure TStDictionary.dySetHashSize(Size : Integer);
@@ -614,7 +502,7 @@ begin
   EnterCS;
   try
 {$ENDIF}
-    T := Iterate(FindNodeData, Data);
+    T := Iterate<Pointer>(FindNodeData, Data);
     if Assigned(T) then begin
       Result := True;
       Name := T.dnName;
@@ -627,52 +515,9 @@ begin
 {$ENDIF}
 end;
 
-procedure TStDictionary.GetItems(S : TStrings);
-var
-  H : Integer;
-  T : TStDictNode;
-begin
-  S.Clear;
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    if FCount <> 0 then begin
-      for H := 0 to FHashSize-1 do begin
-        T := dySymbols^[H];
-        while Assigned(T) do begin
-          S.AddObject(T.Name, T.Data);
-          T := T.dnNext;
-        end;
-      end;
-    end;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
 
-procedure TStDictionary.SetItems(S : TStrings);
-var
-  I : Integer;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    Clear;
-    for I := 0 to S.Count-1 do
-      Add(S.Strings[I], S.Objects[I]);
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
-
-function TStDictionary.Iterate(Action : TIterateFunc;
-                               OtherData : Pointer) : TStDictNode;
+function TStDictionary.Iterate<TOtherData>(Action : TIterateFunc<TOtherData>;
+                               OtherData : TOtherData) : TStDictNode;
 var
   H    : Integer;
   T, N : TStDictNode;
@@ -712,7 +557,7 @@ begin
   try
 {$ENDIF}
     dyIgnoreDups := IgnoreDups;
-    D.Iterate(JoinNode, Self);
+    D.Iterate<TStDictionary>(JoinNode, Self);
 
     {Dispose of D, but not its nodes}
     D.IncNodeProtection;
@@ -726,121 +571,5 @@ begin
 {$ENDIF}
 end;
 
-procedure TStDictionary.Update(const Name : string; Data : Pointer);
-var
-  H : Integer;
-  P, T : TStDictNode;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    dyFindNode(Name, H, P, T);
-    if Assigned(T) then
-      T.Data := Data;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
 
-procedure TStDictionary.LoadFromStream(S : TStream);
-var
-  Data : pointer;
-  Reader : TReader;
-  StreamedClass : TPersistentClass;
-  StreamedNodeClass : TPersistentClass;
-  StreamedClassName : string;
-  StreamedNodeClassName : string;
-  St : string;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    Clear;
-    Reader := TReader.Create(S, 1024);
-    try
-      with Reader do
-        begin
-          StreamedClassName := ReadString;
-          StreamedClass := GetClass(StreamedClassName);
-          if (StreamedClass = nil) then
-            RaiseContainerErrorFmt(stscUnknownClass, [StreamedClassName]);
-          if (StreamedClass <> Self.ClassType) then
-            RaiseContainerError(stscWrongClass);
-          StreamedNodeClassName := ReadString;
-          StreamedNodeClass := GetClass(StreamedNodeClassName);
-          if (StreamedNodeClass = nil) then
-            RaiseContainerErrorFmt(stscUnknownNodeClass, [StreamedNodeClassName]);
-          if (StreamedNodeClass <> conNodeClass) then
-            RaiseContainerError(stscWrongNodeClass);
-          HashSize := ReadInteger;
-          ReadListBegin;
-          while not EndOfList do
-            begin
-              St := ReadString;
-              Data := DoLoadData(Reader);
-              Add(St, Data);
-            end;
-          ReadListEnd;
-        end;
-    finally
-      Reader.Free;
-    end;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
-
-procedure TStDictionary.StoreToStream(S : TStream);
-var
-  H      : Integer;
-  Walker : TStDictNode;
-  Writer : TWriter;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    Writer := TWriter.Create(S, 1024);
-    try
-      with Writer do
-        begin
-          WriteString(Self.ClassName);
-          WriteString(conNodeClass.ClassName);
-          WriteInteger(HashSize);
-          WriteListBegin;
-          if (Count <> 0) then
-            for H := 0 to FHashSize-1 do
-              begin
-                Walker := dySymbols^[H];
-                while Assigned(Walker) do
-                  begin
-                    WriteString(Walker.dnName);
-                    DoStoreData(Writer, Walker.Data);
-                    Walker := Walker.dnNext;
-                  end;
-              end;
-          WriteListEnd;
-        end;
-    finally
-      Writer.Free;
-    end;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
-
-{$IFDEF ThreadSafe}
-initialization
-  Windows.InitializeCriticalSection(ClassCritSect);
-finalization
-  Windows.DeleteCriticalSection(ClassCritSect);
-{$ENDIF}
 end.

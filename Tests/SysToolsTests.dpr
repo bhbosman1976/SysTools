@@ -18,6 +18,11 @@ uses
   DUnitTestRunner,
   TestStBase in 'TestStBase.pas',
   StBase in '..\source\StBase.pas',
+  StTree in '..\source\StTree.pas',
+  StList in '..\source\StList.pas',
+  StColl in '..\source\StColl.pas',
+  StDict in '..\source\StDict.pas',
+  StDQue in '..\source\StDQue.pas',
   TestStUtils in 'TestStUtils.pas',
   TestStStrL in 'TestStStrL.pas';
 

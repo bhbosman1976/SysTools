@@ -70,60 +70,57 @@ type
   {.Z-}
     public
       constructor Create(AData : Pointer); override;
-        {-Initialize node}
+
   end;
-
   TStTree = class(TStContainer)
-  {.Z+}
-    protected
-      trRoot : TStTreeNode;       {Root of tree}
-      trIgnoreDups : Boolean;     {Ignore duplicates during Join?}
+  public
+    type TIterateFunc = function(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean of object;
+    class function DestroyNode(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
+    class function JoinNode(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
+    class function SplitTree(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
+    {$IFDEF ThreadSafe}
+    class var ClassCritSect : TRTLCriticalSection;
+    {$ENDIF}
+    class procedure EnterClassCS;
+    class procedure LeaveClassCS;
+  protected
+    trRoot : TStTreeNode;       {Root of tree}
+    trIgnoreDups : Boolean;     {Ignore duplicates during Join?}
+    procedure trInsertNode(N : TStTreeNode);
+  public
+    class constructor Create;
+    class destructor Destroy;
+    constructor Create(NodeClass : TStNodeClass); virtual;
+    {-Initialize an empty tree}
+    function DoCompare(Data1, Data2 : Pointer) : Integer;
 
-      procedure ForEachPointer(Action : TIteratePointerFunc; OtherData : pointer);
-        override;
-      function StoresPointers : boolean;
-        override;
-      procedure trInsertNode(N : TStTreeNode);
+    procedure Clear; override;
+    {-Remove all nodes from container but leave it instantiated}
 
-   {.Z-}
-    public
-      constructor Create(NodeClass : TStNodeClass); virtual;
-        {-Initialize an empty tree}
+    function Insert(Data : Pointer) : TStTreeNode;
+    {-Add a new node}
+    procedure Delete(Data : Pointer);
+    {-Delete a node}
+    function Find(Data : Pointer) : TStTreeNode;
+    {-Return node that matches Data}
 
-      procedure LoadFromStream(S : TStream); override;
-        {-Create a list and its data from a stream}
-      procedure StoreToStream(S : TStream); override;
-        {-Write a list and its data to a stream}
+    procedure Join(T: TStTree; IgnoreDups : Boolean);
+    {-Add tree T into this one and dispose T}
+    function Split(Data : Pointer) : TStTree;
+    {-Split tree, putting all nodes above and including Data into new tree}
 
-      procedure Clear; override;
-        {-Remove all nodes from container but leave it instantiated}
+    function Iterate(Action : TIterateFunc; Up : Boolean;
+                   OtherData : Pointer) : TStTreeNode;
+    {-Call Action for all the nodes, returning the last node visited}
 
-      function Insert(Data : Pointer) : TStTreeNode;
-        {-Add a new node}
-      procedure Delete(Data : Pointer);
-        {-Delete a node}
-      function Find(Data : Pointer) : TStTreeNode;
-        {-Return node that matches Data}
-
-      procedure Assign(Source: TPersistent); override;
-        {-Assign another container's contents to this one}
-      procedure Join(T: TStTree; IgnoreDups : Boolean);
-        {-Add tree T into this one and dispose T}
-      function Split(Data : Pointer) : TStTree;
-        {-Split tree, putting all nodes above and including Data into new tree}
-
-      function Iterate(Action : TIterateFunc; Up : Boolean;
-                       OtherData : Pointer) : TStTreeNode;
-        {-Call Action for all the nodes, returning the last node visited}
-
-      function First : TStTreeNode;
-        {-Return the smallest-value node in the tree}
-      function Last : TStTreeNode;
-        {-Return the largest-value node in the tree}
-      function Next(N : TStTreeNode) : TStTreeNode;
-        {-Return the next node whose value is larger than N's}
-      function Prev(N : TStTreeNode) : TStTreeNode;
-        {-Return the largest node whose value is smaller than N's}
+    function First : TStTreeNode;
+    {-Return the smallest-value node in the tree}
+    function Last : TStTreeNode;
+    {-Return the largest-value node in the tree}
+    function Next(N : TStTreeNode) : TStTreeNode;
+    {-Return the next node whose value is larger than N's}
+    function Prev(N : TStTreeNode) : TStTreeNode;
+    {-Return the largest node whose value is smaller than N's}
   end;
 
 {.Z+}
@@ -134,19 +131,29 @@ type
 
 implementation
 
-{$IFDEF ThreadSafe}
-var
-  ClassCritSect : TRTLCriticalSection;
-{$ENDIF}
 
-procedure EnterClassCS;
+class destructor TStTree.Destroy;
+begin
+  {$IFDEF ThreadSafe}
+  Windows.DeleteCriticalSection(ClassCritSect);
+  {$ENDIF}
+end;
+
+class function TStTree.DestroyNode(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
+begin
+  Container.DisposeNodeData(Node);
+  Node.Free;
+  Result := True;
+end;
+
+class procedure TStTree.EnterClassCS;
 begin
 {$IFDEF ThreadSafe}
   EnterCriticalSection(ClassCritSect);
 {$ENDIF}
 end;
 
-procedure LeaveClassCS;
+class procedure TStTree.LeaveClassCS;
 begin
 {$IFDEF ThreadSafe}
   LeaveCriticalSection(ClassCritSect);
@@ -177,6 +184,18 @@ constructor TStTreeNode.Create(AData : Pointer);
 begin
   inherited Create(AData);
 end;
+
+
+
+function TStTree.DoCompare(Data1, Data2 : Pointer) : Integer;
+begin
+  Result := 0;
+  if Assigned(FOnCompare) then
+    FOnCompare(Self, Data1, Data2, Result)
+  else if Assigned(FCompare) then
+    Result := FCompare(Data1, Data2);
+end;
+
 
 {----------------------------------------------------------------------}
 
@@ -283,8 +302,7 @@ begin
   end;
 end;
 
-function JoinNode(Container : TStContainer; Node : TStNode;
-                  OtherData : Pointer) : Boolean; far;
+class function TStTree.JoinNode(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
 var
   N : TStTreeNode;
 begin
@@ -312,8 +330,7 @@ type
     STree : TStTree;
   end;
 
-function SplitTree(Container : TStContainer; Node : TStNode;
-                   OtherData : Pointer) : Boolean; far;
+class function TStTree.SplitTree(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
 var
   D : Pointer;
 begin
@@ -325,48 +342,7 @@ begin
   end;
 end;
 
-type
-  TStoreInfo = record
-    Wtr : TWriter;
-    SDP : TStoreDataProc;
-  end;
-
-function StoreNode(Container : TStContainer; Node : TStNode;
-                   OtherData : Pointer) : Boolean; far;
-  begin
-    Result := True;
-    with TStoreInfo(OtherData^) do
-      SDP(Wtr, Node.Data);
-  end;
-
-function AssignData(Container : TStContainer;
-                    Data, OtherData : Pointer) : Boolean; far;
-  var
-    OurTree : TStTree absolute OtherData;
-  begin
-    OurTree.Insert(Data);
-    Result := true;
-  end;
-
 {----------------------------------------------------------------------}
-procedure TStTree.Assign(Source: TPersistent);
-  begin
-    {$IFDEF ThreadSafe}
-    EnterCS;
-    try
-    {$ENDIF}
-      {The only containers that we allow to be assigned to a tree are
-         - a SysTools linked list (TStList)
-         - another SysTools binary search tree (TStTree)
-         - a SysTools collection (TStCollection, TStSortedCollection)}
-      if not AssignPointers(Source, AssignData) then
-        inherited Assign(Source);
-    {$IFDEF ThreadSafe}
-    finally
-      LeaveCS;
-    end;{try..finally}
-    {$ENDIF}
-  end;
 
 procedure TStTree.Clear;
 begin
@@ -385,53 +361,18 @@ begin
 {$ENDIF}
 end;
 
-procedure TStTree.ForEachPointer(Action : TIteratePointerFunc;
-                                 OtherData : pointer);
-var
-  P : TStTreeNode;
-  Q : TStTreeNode;
-  StackP : Integer;
-  Stack : StackArray;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    StackP := 0;
-    P := trRoot;
-    repeat
-      while Assigned(P) do begin
-        Inc(StackP);
-        Stack[StackP].Node := P;
-        P := P.tnPos[false];
-      end;
-      if StackP = 0 then begin
-        Exit;
-      end;
 
-      P := Stack[StackP].Node;
-      Dec(StackP);
-      Q := P;
-      P := P.tnPos[true];
-      if not Action(Self, Q.Data, OtherData) then begin
-        Exit;
-      end;
-    until False;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
-
-function TStTree.StoresPointers : boolean;
-begin
-  Result := true;
-end;
 
 constructor TStTree.Create(NodeClass : TStNodeClass);
 begin
   CreateContainer(NodeClass, 0);
+end;
+
+class constructor TStTree.Create;
+begin
+  {$IFDEF ThreadSafe}
+  Windows.InitializeCriticalSection(ClassCritSect);
+  {$ENDIF}
 end;
 
 procedure TStTree.Delete(Data : Pointer);
@@ -842,90 +783,6 @@ begin
   end;
 end;
 
-procedure TStTree.LoadFromStream(S : TStream);
-var
-  Data : pointer;
-  Reader : TReader;
-  StreamedClass : TPersistentClass;
-  StreamedNodeClass : TPersistentClass;
-  StreamedClassName : string;
-  StreamedNodeClassName : string;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    Clear;
-    Reader := TReader.Create(S, 1024);
-    try
-      with Reader do
-        begin
-          StreamedClassName := ReadString;
-          StreamedClass := GetClass(StreamedClassName);
-          if (StreamedClass = nil) then
-            RaiseContainerErrorFmt(stscUnknownClass, [StreamedClassName]);
-          if (not IsOrInheritsFrom(StreamedClass, Self.ClassType)) or
-              (not IsOrInheritsFrom(TStTree, StreamedClass)) then
-            RaiseContainerError(stscWrongClass);
-          StreamedNodeClassName := ReadString;
-          StreamedNodeClass := GetClass(StreamedNodeClassName);
-          if (StreamedNodeClass = nil) then
-            RaiseContainerErrorFmt(stscUnknownNodeClass, [StreamedNodeClassName]);
-          if (not IsOrInheritsFrom(StreamedNodeClass, conNodeClass)) or
-              (not IsOrInheritsFrom(TStTreeNode, StreamedNodeClass)) then
-            RaiseContainerError(stscWrongNodeClass);
-          ReadListBegin;
-          while not EndOfList do
-            begin
-              Data := DoLoadData(Reader);
-              Insert(Data);
-            end;
-          ReadListEnd;
-        end;
-    finally
-      Reader.Free;
-    end;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
 
-procedure TStTree.StoreToStream(S : TStream);
-var
-  Writer : TWriter;
-  StoreInfo : TStoreInfo;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    Writer := TWriter.Create(S, 1024);
-    try
-      with Writer do begin
-        WriteString(Self.ClassName);
-        WriteString(conNodeClass.ClassName);
-        WriteListBegin;
-        StoreInfo.Wtr := Writer;
-        StoreInfo.SDP := StoreData;
-        Iterate(StoreNode, false, @StoreInfo);
-        WriteListEnd;
-      end;
-    finally
-      Writer.Free;
-    end;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
 
-{$IFDEF ThreadSafe}
-initialization
-  Windows.InitializeCriticalSection(ClassCritSect);
-finalization
-  Windows.DeleteCriticalSection(ClassCritSect);
-{$ENDIF}
 end.
