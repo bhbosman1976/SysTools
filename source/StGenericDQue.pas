@@ -44,7 +44,7 @@
    PopTail, or as a FIFO queue by calling PushTail and PopHead.
 }
 
-unit StDenericDQue;
+unit StGenericDQue;
 
 interface
 
