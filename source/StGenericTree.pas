@@ -52,112 +52,120 @@
     This is much slower than calling the Iterate method.
 }
 
-unit StTree;
+unit StGenericTree;
 
 interface
 
 uses
   Windows,
-  SysUtils, Classes, StConst, StBase;
+  SysUtils, Classes, StConst, StGenericBase;
 
 type
-  TStTreeNode = class(TStNode)
-  {.Z+}
+  TStTreeNode<TData> = class(TStNode<TData>)
+  strict private
+    class var FDestroyCount: integer;
+    class var FCreateCount: integer;
     protected
-      tnPos  : array[Boolean] of TStTreeNode; {Child nodes}
+      tnPos  : array[Boolean] of TStTreeNode<TData>; {Child nodes}
       tnBal  : Integer;         {Used during balancing}
 
-  {.Z-}
-    public
-      constructor Create(AData : Pointer); override;
-
-  end;
-  TStTree = class(TStContainer)
   public
-    type TIterateFunc = function(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean of object;
-    class function DestroyNode(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
-    class function JoinNode(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
-    class function SplitTree(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
-    {$IFDEF ThreadSafe}
+    constructor Create(); override;
+    procedure AfterConstruction; override;
+    procedure BeforeDestruction; override;
+    class property CreateCount: integer read FCreateCount write FCreateCount;
+    class property DestroyCount: integer read FDestroyCount write FDestroyCount;
+  end;
+  TStTree<TData> = class(TStContainer<TData>)
+  strict private
+    class var FDestroyCount: integer;
+    class var FCreateCount: integer;
+  public
+    type TIterateFunc<TOtherData> = function(Container : TStTree<TData>; Node : TStTreeNode<TData>; OtherData : TOtherData) : Boolean of object;
+    type
+      SplitRec =
+      record
+        SData : Pointer;
+        STree : TStTree<TData>;
+      end;
+
+    const
+      StackSize = 40;
+
+    type
+      StackNode =
+        record
+          Node : TStTreeNode<TData>;
+          Comparison : Integer;
+        end;
+      StackArray = array[1..StackSize] of StackNode;
+
+
+    class function DestroyNode(Container : TStTree<TData>; Node : TStTreeNode<TData>; OtherData : Pointer) : Boolean;
+    class function JoinNode(Container : TStTree<TData>; Node : TStTreeNode<TData>; OtherData : TStTree<TData>) : Boolean;
+    class procedure DelBalance(var P : TStTreeNode<TData>; var SubTreeDec : Boolean; CmpRes : Integer);
+    class procedure InsBalance(var P : TStTreeNode<TData>; var SubTreeInc : Boolean; CmpRes : Integer);
+    class function Sign(I : Integer) : Integer;
     class var ClassCritSect : TRTLCriticalSection;
-    {$ENDIF}
     class procedure EnterClassCS;
     class procedure LeaveClassCS;
+
   protected
-    trRoot : TStTreeNode;       {Root of tree}
+    trRoot : TStTreeNode<TData>;       {Root of tree}
     trIgnoreDups : Boolean;     {Ignore duplicates during Join?}
-    procedure trInsertNode(N : TStTreeNode);
+    procedure trInsertNode(N : TStTreeNode<TData>);
   public
     class constructor Create;
     class destructor Destroy;
-    constructor Create(NodeClass : TStNodeClass); virtual;
-    {-Initialize an empty tree}
-    function DoCompare(Data1, Data2 : Pointer) : Integer;
-
+    constructor Create(); virtual;
+    procedure AfterConstruction; override;
+    procedure BeforeDestruction; override;
+    function DoCompare(Data1, Data2 : TData) : Integer;
     procedure Clear; override;
-    {-Remove all nodes from container but leave it instantiated}
-
-    function Insert(Data : Pointer) : TStTreeNode;
-    {-Add a new node}
-    procedure Delete(Data : Pointer);
-    {-Delete a node}
-    function Find(Data : Pointer) : TStTreeNode;
-    {-Return node that matches Data}
-
-    procedure Join(T: TStTree; IgnoreDups : Boolean);
-    {-Add tree T into this one and dispose T}
-    function Split(Data : Pointer) : TStTree;
-    {-Split tree, putting all nodes above and including Data into new tree}
-
-    function Iterate(Action : TIterateFunc; Up : Boolean;
-                   OtherData : Pointer) : TStTreeNode;
-    {-Call Action for all the nodes, returning the last node visited}
-
-    function First : TStTreeNode;
-    {-Return the smallest-value node in the tree}
-    function Last : TStTreeNode;
-    {-Return the largest-value node in the tree}
-    function Next(N : TStTreeNode) : TStTreeNode;
-    {-Return the next node whose value is larger than N's}
-    function Prev(N : TStTreeNode) : TStTreeNode;
-    {-Return the largest node whose value is smaller than N's}
+    function Insert(Data : TData) : TStTreeNode<TData>;
+    procedure Delete(Data : TData);
+    function Find(Data : TData) : TStTreeNode<TData>;
+    procedure Join(T: TStTree<TData>; IgnoreDups : Boolean);
+    function Iterate<TOtherData>(Action : TIterateFunc<TOtherData>; Up : Boolean; OtherData : TOtherData) : TStTreeNode<TData>;
+    function First : TStTreeNode<TData>;
+    function Last : TStTreeNode<TData>;
+    function Next(N : TStTreeNode<TData>) : TStTreeNode<TData>;
+    function Prev(N : TStTreeNode<TData>) : TStTreeNode<TData>;
+    class property CreateCount: integer read FCreateCount write FCreateCount;
+    class property DestroyCount: integer read FDestroyCount write FDestroyCount;
   end;
-
-{.Z+}
-  TStTreeClass = class of TStTree;
-{.Z-}
 
 {======================================================================}
 
 implementation
 
 
-class destructor TStTree.Destroy;
+class destructor TStTree<TData>.Destroy;
 begin
-  {$IFDEF ThreadSafe}
+
   Windows.DeleteCriticalSection(ClassCritSect);
-  {$ENDIF}
+
 end;
 
-class function TStTree.DestroyNode(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
+class function TStTree<TData>.DestroyNode(Container : TStTree<TData>; Node : TStTreeNode<TData>; OtherData : Pointer) : Boolean;
 begin
   Container.DisposeNodeData(Node);
   Node.Free;
   Result := True;
 end;
 
-class procedure TStTree.EnterClassCS;
+class procedure TStTree<TData>.EnterClassCS;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCriticalSection(ClassCritSect);
-{$ENDIF}
+
 end;
 
-class procedure TStTree.LeaveClassCS;
+class procedure TStTree<TData>.LeaveClassCS;
 begin
-{$IFDEF ThreadSafe}
+
   LeaveCriticalSection(ClassCritSect);
-{$ENDIF}
+
 end;
 
 const
@@ -169,25 +177,29 @@ const
  allows at least 2**32 elements in the tree without overflowing the
  stack.}
 
-const
-  StackSize = 40;
 
-type
-  StackNode =
-    record
-      Node : TStTreeNode;
-      Comparison : Integer;
-    end;
-  StackArray = array[1..StackSize] of StackNode;
-
-constructor TStTreeNode.Create(AData : Pointer);
+procedure TStTreeNode<TData>.AfterConstruction;
 begin
-  inherited Create(AData);
+  inherited AfterConstruction;
+
+  InterlockedIncrement(FCreateCount);
+end;
+
+procedure TStTreeNode<TData>.BeforeDestruction;
+begin
+  InterlockedIncrement(FDestroyCount);
+
+  inherited BeforeDestruction;
+end;
+
+constructor TStTreeNode<TData>.Create;
+begin
+  inherited Create;
 end;
 
 
 
-function TStTree.DoCompare(Data1, Data2 : Pointer) : Integer;
+function TStTree<TData>.DoCompare(Data1, Data2 : TData) : Integer;
 begin
   Result := 0;
   if Assigned(FOnCompare) then
@@ -199,7 +211,7 @@ end;
 
 {----------------------------------------------------------------------}
 
-function Sign(I : Integer) : Integer;
+class function TStTree<TData>.Sign(I : Integer) : Integer;
 begin
   if I < 0 then
     Sign := -1
@@ -209,9 +221,9 @@ begin
     Sign := 0;
 end;
 
-procedure DelBalance(var P : TStTreeNode; var SubTreeDec : Boolean; CmpRes : Integer);
+class procedure TStTree<TData>.DelBalance(var P : TStTreeNode<TData>; var SubTreeDec : Boolean; CmpRes : Integer);
 var
-  P1, P2 : TStTreeNode;
+  P1, P2 : TStTreeNode<TData>;
   B1, B2 : Integer;
   LR : Boolean;
 begin
@@ -260,11 +272,10 @@ begin
   end;
 end;
 
-procedure InsBalance(var P : TStTreeNode; var SubTreeInc : Boolean;
-                     CmpRes : Integer);
+class procedure TStTree<TData>.InsBalance(var P : TStTreeNode<TData>; var SubTreeInc : Boolean; CmpRes : Integer);
 var
-  P1 : TStTreeNode;
-  P2 : TStTreeNode;
+  P1 : TStTreeNode<TData>;
+  P2 : TStTreeNode<TData>;
   LR : Boolean;
 begin
   CmpRes := Sign(CmpRes);
@@ -302,94 +313,91 @@ begin
   end;
 end;
 
-class function TStTree.JoinNode(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
+class function TStTree<TData>.JoinNode(Container : TStTree<TData>; Node : TStTreeNode<TData>; OtherData : TStTree<TData>) : Boolean;
 var
-  N : TStTreeNode;
+  N : TStTreeNode<TData>;
 begin
   Result := True;
-  N := TStTree(OtherData).Find(Node.Data);
+  N := TStTree<TData>(OtherData).Find(Node.Data);
   if Assigned(N) then
-    if TStTree(OtherData).trIgnoreDups then begin
+    if TStTree<TData>(OtherData).trIgnoreDups then begin
       Node.Free;
       Exit;
     end else
       RaiseContainerError(stscDupNode);
 
-  with TStTreeNode(Node) do begin
+  with TStTreeNode<TData>(Node) do begin
     tnPos[Left] := nil;
     tnPos[Right] := nil;
     tnBal := 0;
   end;
-  TStTree(OtherData).trInsertNode(TStTreeNode(Node));
+  TStTree<TData>(OtherData).trInsertNode(TStTreeNode<TData>(Node));
 end;
 
-type
-  SplitRec =
-  record
-    SData : Pointer;
-    STree : TStTree;
-  end;
 
-class function TStTree.SplitTree(Container : TStTree; Node : TStTreeNode; OtherData : Pointer) : Boolean;
-var
-  D : Pointer;
+
+procedure TStTree<TData>.AfterConstruction;
 begin
-  Result := True;
-  if Container.DoCompare(Node.Data, SplitRec(OtherData^).SData) >= 0 then begin
-    D := Node.Data;
-    TStTree(Container).Delete(D);
-    SplitRec(OtherData^).STree.Insert(D);
-  end;
+  inherited AfterConstruction;
+
+  InterlockedIncrement(FCreateCount);
+end;
+
+procedure TStTree<TData>.BeforeDestruction;
+begin
+  InterlockedIncrement(FDestroyCount);
+
+  inherited BeforeDestruction;
 end;
 
 {----------------------------------------------------------------------}
 
-procedure TStTree.Clear;
+procedure TStTree<TData>.Clear;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if conNodeProt = 0 then
-      Iterate(DestroyNode, True, nil);
+      Iterate<Pointer>(DestroyNode, True, nil);
     trRoot := nil;
     FCount := 0;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
 
 
-constructor TStTree.Create(NodeClass : TStNodeClass);
+constructor TStTree<TData>.Create();
 begin
-  CreateContainer(NodeClass, 0);
+  inherited Create;
 end;
 
-class constructor TStTree.Create;
+class constructor TStTree<TData>.Create;
 begin
-  {$IFDEF ThreadSafe}
+
   Windows.InitializeCriticalSection(ClassCritSect);
-  {$ENDIF}
+
 end;
 
-procedure TStTree.Delete(Data : Pointer);
+procedure TStTree<TData>.Delete(Data : TData);
 var
-  P : TStTreeNode;
-  Q : TStTreeNode;
-  TmpData : Pointer;
+  P : TStTreeNode<TData>;
+  Q : TStTreeNode<TData>;
+  TmpData : TData;
   CmpRes : Integer;
   Found : Boolean;
   SubTreeDec : Boolean;
   StackP : Integer;
   Stack : StackArray;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     P := trRoot;
     if not Assigned(P) then
       Exit;
@@ -465,22 +473,22 @@ begin
         DelBalance(Node.tnPos[Comparison > 0], SubTreeDec, Stack[StackP].Comparison);
       dec(StackP);
     end;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStTree.Find(Data : Pointer) : TStTreeNode;
+function TStTree<TData>.Find(Data : TData) : TStTreeNode<TData>;
 var
-  P : TStTreeNode;
+  P : TStTreeNode<TData>;
   CmpRes : Integer;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     P := trRoot;
     while Assigned(P) do begin
       CmpRes := DoCompare(Data, P.Data);
@@ -492,19 +500,19 @@ begin
     end;
 
     Result := nil;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStTree.First : TStTreeNode;
+function TStTree<TData>.First : TStTreeNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if Count = 0 then
       Result := nil
     else begin
@@ -512,41 +520,40 @@ begin
       while Assigned(Result.tnPos[Left]) do
         Result := Result.tnPos[Left];
     end;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStTree.Insert(Data : Pointer) : TStTreeNode;
+function TStTree<TData>.Insert(Data : TData) : TStTreeNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     {Create the node}
-    Result := TStTreeNode(conNodeClass.Create(Data));
+    Result :=  TStTreeNode<TData>.create;
+    Result.Init(Data);
     trInsertNode(Result);
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStTree.Iterate(Action : TIterateFunc; Up : Boolean;
-                         OtherData : Pointer) : TStTreeNode;
+function TStTree<TData>.Iterate<TOtherData>(Action : TIterateFunc<TOtherData>; Up : Boolean;
+                         OtherData : TOtherData) : TStTreeNode<TData>;
 var
-  P : TStTreeNode;
-  Q : TStTreeNode;
+  P : TStTreeNode<TData>;
+  Q : TStTreeNode<TData>;
   StackP : Integer;
   Stack : StackArray;
 begin
-{$IFDEF ThreadSafe}
   EnterCS;
   try
-{$ENDIF}
     StackP := 0;
     P := trRoot;
     repeat
@@ -569,40 +576,36 @@ begin
         Exit;
       end;
     until False;
-{$IFDEF ThreadSafe}
   finally
     LeaveCS;
   end;
-{$ENDIF}
 end;
 
-procedure TStTree.Join(T: TStTree; IgnoreDups : Boolean);
+procedure TStTree<TData>.Join(T: TStTree<TData>; IgnoreDups : Boolean);
 begin
-{$IFDEF ThreadSafe}
+
   EnterClassCS;
   EnterCS;
   T.EnterCS;
   try
-{$ENDIF}
     trIgnoreDups := IgnoreDups;
-    T.Iterate(JoinNode, True, Self);
+    T.Iterate<TStTree<TData>>(JoinNode, True, Self);
     T.IncNodeProtection;
     T.Free;
-{$IFDEF ThreadSafe}
+
   finally
     T.LeaveCS;
     LeaveCS;
     LeaveClassCS;
   end;
-{$ENDIF}
 end;
 
-function TStTree.Last : TStTreeNode;
+function TStTree<TData>.Last : TStTreeNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if Count = 0 then
       Result := nil
     else begin
@@ -610,24 +613,22 @@ begin
       while Assigned(Result.tnPos[Right]) do
         Result := Result.tnPos[Right];
     end;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStTree.Next(N : TStTreeNode) : TStTreeNode;
+function TStTree<TData>.Next(N : TStTreeNode<TData>) : TStTreeNode<TData>;
 var
   Found : Word;
-  P : TStTreeNode;
+  P : TStTreeNode<TData>;
   StackP : Integer;
   Stack : StackArray;
 begin
-{$IFDEF ThreadSafe}
   EnterCS;
   try
-{$ENDIF}
     Result := nil;
     Found := 0;
     StackP := 0;
@@ -651,24 +652,20 @@ begin
         Inc(Found);
       P := P.tnPos[Right];
     until False;
-{$IFDEF ThreadSafe}
   finally
     LeaveCS;
   end;
-{$ENDIF}
 end;
 
-function TStTree.Prev(N : TStTreeNode) : TStTreeNode;
+function TStTree<TData>.Prev(N : TStTreeNode<TData>) : TStTreeNode<TData>;
 var
   Found : Word;
-  P : TStTreeNode;
+  P : TStTreeNode<TData>;
   StackP : Integer;
   Stack : StackArray;
 begin
-{$IFDEF ThreadSafe}
   EnterCS;
   try
-{$ENDIF}
     Result := nil;
     Found := 0;
     StackP := 0;
@@ -692,48 +689,15 @@ begin
         Inc(Found);
       P := P.tnPos[Left];
     until False;
-{$IFDEF ThreadSafe}
   finally
     LeaveCS;
   end;
-{$ENDIF}
 end;
 
-function TStTree.Split(Data : Pointer) : TStTree;
-var
-  SR : SplitRec;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    {Create and initialize the new tree}
-    Result := TStTreeClass(ClassType).Create(conNodeClass);
-    Result.Compare := Compare;
-    Result.OnCompare := OnCompare;
-    Result.DisposeData := DisposeData;
-    Result.OnDisposeData := OnDisposeData;
 
-    {Scan all elements to transfer some to new tree}
-    SR.SData := Data;
-    SR.STree := Result;
-    {Prevent SplitTree from disposing of node data it moves from old tree to new}
-    DisposeData := nil;
-    OnDisposeData := nil;
-    Iterate(SplitTree, True, @SR);
-    {Restore DisposeData property}
-    DisposeData := Result.DisposeData;
-    OnDisposeData := Result.OnDisposeData;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
-
-procedure TStTree.trInsertNode(N : TStTreeNode);
+procedure TStTree<TData>.trInsertNode(N : TStTreeNode<TData>);
 var
-  P : TStTreeNode;
+  P : TStTreeNode<TData>;
   CmpRes : Integer;
   StackP : Integer;
   Stack : StackArray;

@@ -33,25 +33,16 @@
 
 {$I StDefine.inc}
 
-unit StBase;
+unit StGenericBase;
 
-{$IFDEF FPC}
-  {$MODE Delphi}
-  {$ASMMODE intel}
-{$ENDIF}
 
 interface
 
 uses
-  Windows,
-  Classes, SysUtils, Messages, StdCtrls,
-
-  StConst;
+  Windows, Classes, SysUtils, Messages, StdCtrls, StConst;
 
 const
-{.Z+}
   StMaxBlockSize = MaxLongInt;
-{.Z-}
 
 type
 {!!.01 - moved from StBase.pas }
@@ -66,19 +57,14 @@ type
 type
   TStHwnd = HWND;
 
-{-SysTools exception class tree}
 type
   EStException = class(Exception)     {ancestor to all SysTools exceptions}
-    protected {private}
-      FErrorCode : Integer;
-
-    public
-      constructor CreateResTP(Ident : Integer; Dummy : Word);
-      constructor CreateResFmtTP(Ident : Integer; const Args : array of const;
-                                 Dummy : Word);
-      property ErrorCode : Integer
-        read FErrorCode
-        write FErrorCode;
+  protected
+    FErrorCode : Integer;
+  public
+    constructor CreateResTP(Ident : Integer; Dummy : Word);
+    constructor CreateResFmtTP(Ident : Integer; const Args : array of const; Dummy : Word);
+    property ErrorCode : Integer read FErrorCode write FErrorCode;
   end;
   EStExceptionClass = class of EStException;
 
@@ -103,16 +89,12 @@ type
   EStPRNGError = class(EStException);        {Random number errors}
 
   EStExprError = class(EStException) {expression evaluator exceptions}
-    protected {private}
-      FErrorCol : Integer;
+  protected
+    FErrorCol : Integer;
   public
     constructor CreateResTPCol(Ident : Integer; Column : Integer; Dummy : Integer);
-    property ErrorColumn : Integer
-      {-Returns the string position at the start of the token where
-        the error was detected}
-        read FErrorCol;
+    property ErrorColumn : Integer read FErrorCol;
   end;
-
 
 const
 {.Z+}
@@ -150,121 +132,65 @@ type
 {.Z-}
 
 type
-  {the SysTools floating point type}
-    {$IFOPT N+}
     TStFloat = Extended;
-    {$ELSE}
-    TStFloat = Real;
-    {$ENDIF}
 
 const
   WMCOPYID : DWORD = $AFAF;
 
 type
-  TStNode = class(TObject)
-{.Z+}
-  protected {private}
-    FData : Pointer;
-{.Z-}
+  TStNode<TData> = class(TObject)
+  strict private
+    class var FDestroyCount: integer;
+    class var FCreateCount: integer;
+  protected
+    FData : TData;
   public
-    constructor Create(AData : Pointer);
-      virtual;
-    property Data : Pointer
-       read FData
-       write FData;
+    constructor Create; virtual;
+    procedure AfterConstruction; override;
+    procedure BeforeDestruction; override;
+    procedure Init(const AData: TData); virtual;
+    property Data : TData read FData write FData;
+    class property CreateCount: integer read FCreateCount write FCreateCount;
+    class property DestroyCount: integer read FDestroyCount write FDestroyCount;
   end;
 
-{.Z+}
-  TStNodeClass = class of TStNode;
-{.Z-}
+  TCompareFunc<TData> = function(Data1, Data2 : TData) : Integer;
+  TStCompareEvent<TData> = procedure(Sender : TObject; Data1, Data2 : TData; var Compare : Integer) of object;
+  TDisposeProc<TData> = procedure(Data : TData);
+  TStDisposeEvent<TData> = procedure(Sender : TObject; Data : TData) of object;
 
-  TStContainer = class;
-
-  TCompareFunc =
-    function(Data1, Data2 : Pointer) : Integer;
-  TStCompareEvent =
-    procedure(Sender : TObject; Data1, Data2 : Pointer;  var Compare : Integer)
-    of object;
-
-  TDisposeDataProc =
-    procedure(Data : Pointer);
-  TStDisposeDataEvent =
-    procedure(Sender : TObject; Data : Pointer)
-    of object;
-
-
-
-  TStContainer = class(TObject)
-  {.Z+}
-  protected {private}
-    {property instance variables}
-    FCompare     : TCompareFunc;
-    FDisposeData : TDisposeDataProc;
-    {event variables}
-    FOnCompare     : TStCompareEvent;
-    FOnDisposeData : TStDisposeDataEvent;
-    {private instance variables}
-    {$IFDEF ThreadSafe}
-    conThreadSafe  : TRTLCriticalSection;
-    {$ENDIF}
-    procedure SetCompare(C : TCompareFunc);
-    procedure SetDisposeData(D : TDisposeDataProc);
+  TStContainer<TData> = class(TObject)
+  strict private
+    class var FDestroyCount: integer;
+    class var FCreateCount: integer;
   protected
-    conNodeClass : TStNodeClass;
+    FCompare     : TCompareFunc<TData>;
+    FDisposeData : TDisposeProc<TData>;
+    FOnCompare     : TStCompareEvent<TData>;
+    FOnDisposeData : TStDisposeEvent<TData>;
+    conThreadSafe  : TRTLCriticalSection;
+  protected
     conNodeProt  : Integer;
     FCount       : Integer;
-
-    {protected documented}
     procedure IncNodeProtection;
-      {-Prevent container Destroy from destroying its nodes}
     procedure DecNodeProtection;
-      {-Allow container Destroy to destroy its nodes}
     procedure EnterCS;
-      {-Enter critical section for this instance}
     procedure LeaveCS;
-      {-Leave critical section for this instance}
-    {.Z-}
   public
-    constructor CreateContainer(NodeClass : TStNodeClass; Dummy : Integer);
-      {-Create an abstract container (called by descendants)}
-    destructor Destroy;
-      override;
-      {-Destroy a collection, and perhaps its nodes}
+    constructor Create;
+    destructor Destroy; override;
+    procedure AfterConstruction; override;
+    procedure BeforeDestruction; override;
     procedure Clear; virtual; abstract;
-      {-Remove all elements from collection}
-    procedure DisposeNodeData(P : TStNode);
-      {-Destroy the data associated with a node}
-
-    {wrapper methods for using events or proc/func pointers}
-//    function DoCompare(Data1, Data2 : Pointer) : Integer; virtual;
-    procedure DoDisposeData(Data : Pointer);
-      virtual;
-    
-    property Count : Integer
-      {-Return the number of elements in the collection}
-      read FCount;
-
-    property Compare : TCompareFunc
-      {-Set or read the node comparison function}
-      read FCompare
-      write SetCompare;
-
-    property DisposeData : TDisposeDataProc
-      {-Set or read the node data dispose function}
-      read FDisposeData
-      write SetDisposeData;
-
-
-
-    {events}
-    property OnCompare : TStCompareEvent
-      read FOnCompare
-      write FOnCompare;
-
-    property OnDisposeData : TStDisposeDataEvent
-      read FOnDisposeData
-      write FOnDisposeData;
-
+    procedure DisposeNodeData(P : TStNode<TData>);
+    procedure DoDisposeData(Data : TData); virtual;
+    property Count : Integer read FCount;
+    property Compare : TCompareFunc<TData> read FCompare write FCompare;
+    property DisposeData : TDisposeProc<TData> read FDisposeData write FDisposeData;
+    property OnCompare : TStCompareEvent<TData> read FOnCompare write FOnCompare;
+    property OnDisposeData : TStDisposeEvent<TData> read FOnDisposeData write FOnDisposeData;
+    class property CreateCount: integer read FCreateCount write FCreateCount;
+    class property DestroyCount: integer read FDestroyCount write FDestroyCount;
   end;
 
   TAssignRowData = record
@@ -558,73 +484,81 @@ begin
   raise E;
 end;
 
-{----------------------------------------------------------------------}
-
-constructor TStNode.Create(AData : Pointer);
+procedure TStNode<TData>.AfterConstruction;
 begin
-  Data := AData;
+  inherited AfterConstruction;
+
+  InterlockedIncrement(FCreateCount);
+end;
+
+procedure TStNode<TData>.BeforeDestruction;
+begin
+  InterlockedIncrement(FDestroyCount);
+
+  inherited BeforeDestruction;
 end;
 
 {----------------------------------------------------------------------}
 
-
-
-
-procedure TStContainer.SetCompare(C : TCompareFunc);
+constructor TStNode<TData>.Create;
 begin
-  FCompare := C;
+
 end;
 
-procedure TStContainer.SetDisposeData(D : TDisposeDataProc);
+procedure TStNode<TData>.Init(const AData: TData);
 begin
-  FDisposeData := D;
+  FData := AData;
 end;
 
 
-constructor TStContainer.CreateContainer(NodeClass : TStNodeClass; Dummy : Integer);
+procedure TStContainer<TData>.AfterConstruction;
 begin
-{$IFDEF ThreadSafe}
+  inherited AfterConstruction;
+
+  InterlockedIncrement(FCreateCount);
+end;
+
+procedure TStContainer<TData>.BeforeDestruction;
+begin
+  InterlockedIncrement(FDestroyCount);
+
+  inherited BeforeDestruction;
+end;
+
+{----------------------------------------------------------------------}
+
+constructor TStContainer<TData>.Create;
+begin
   Windows.InitializeCriticalSection(conThreadSafe);
-{$ENDIF}
-
-
-  conNodeClass := NodeClass;
-
   inherited Create;
 end;
 
-procedure TStContainer.DecNodeProtection;
+procedure TStContainer<TData>.DecNodeProtection;
 begin
   Dec(conNodeProt);
 end;
 
-destructor TStContainer.Destroy;
+destructor TStContainer<TData>.Destroy;
 begin
   if conNodeProt = 0 then
     Clear;
-{$IFDEF ThreadSafe}
   Windows.DeleteCriticalSection(conThreadSafe);
-{$ENDIF}
   inherited Destroy;
 end;
 
-procedure TStContainer.DisposeNodeData(P : TStNode);
+procedure TStContainer<TData>.DisposeNodeData(P : TStNode<TData>);
 begin
-{$IFDEF ThreadSafe}
   EnterCS;
   try
-{$ENDIF}
     if Assigned(P) then
       DoDisposeData(P.Data);
-{$IFDEF ThreadSafe}
   finally
     LeaveCS;
   end;
-{$ENDIF}
 end;
 
 
-procedure TStContainer.DoDisposeData(Data : Pointer);
+procedure TStContainer<TData>.DoDisposeData(Data : TData);
 begin
   if Assigned(FOnDisposeData) then
     FOnDisposeData(Self, Data)
@@ -632,23 +566,19 @@ begin
     FDisposeData(Data);
 end;
 
-procedure TStContainer.EnterCS;
+procedure TStContainer<TData>.EnterCS;
 begin
-{$IFDEF ThreadSafe}
   EnterCriticalSection(conThreadSafe);
-{$ENDIF}
 end;
 
-procedure TStContainer.IncNodeProtection;
+procedure TStContainer<TData>.IncNodeProtection;
 begin
   Inc(conNodeProt);
 end;
 
-procedure TStContainer.LeaveCS;
+procedure TStContainer<TData>.LeaveCS;
 begin
-{$IFDEF ThreadSafe}
   LeaveCriticalSection(conThreadSafe);
-{$ENDIF}
 end;
 
 
@@ -674,6 +604,7 @@ end;
 procedure TStBaseEdit.SetVersion(const Value : string);
 begin
 end;
+
 
 end.
 

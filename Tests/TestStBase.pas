@@ -14,7 +14,7 @@ type
 implementation
 
 uses
-  StBase;
+  StGenericBase;
 
 { TTestStBase }
 

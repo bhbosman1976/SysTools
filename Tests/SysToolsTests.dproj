@@ -89,13 +89,14 @@
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
         <DCCReference Include="TestStBase.pas"/>
-        <DCCReference Include="..\source\StBase.pas"/>
-        <DCCReference Include="..\source\StTree.pas"/>
-        <DCCReference Include="..\source\StList.pas"/>
-        <DCCReference Include="..\source\StColl.pas"/>
-        <DCCReference Include="..\source\StDict.pas"/>
-        <DCCReference Include="..\source\StDQue.pas"/>
+        <DCCReference Include="..\source\StGenericBase.pas"/>
+        <DCCReference Include="..\source\StGenericTree.pas"/>
+        <DCCReference Include="..\source\StGenericList.pas"/>
+        <DCCReference Include="..\source\StGenericColl.pas"/>
+        <DCCReference Include="..\source\StGenericDict.pas"/>
+        <DCCReference Include="..\source\StDenericDQue.pas"/>
         <DCCReference Include="TestStUtils.pas"/>
+        <DCCReference Include="TestGenerics.pas"/>
         <DCCReference Include="TestStStrL.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
@@ -122,7 +123,6 @@
             <Platforms>
                 <Platform value="Win32">False</Platform>
                 <Platform value="Win64">True</Platform>
-                <Platform value="Win64x">False</Platform>
             </Platforms>
             <UnitTesting>
                 <TestFramework>DUnit / Delphi Win32</TestFramework>
