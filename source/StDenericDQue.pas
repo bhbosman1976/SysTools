@@ -44,30 +44,38 @@
    PopTail, or as a FIFO queue by calling PushTail and PopHead.
 }
 
-unit StDQue;
+unit StDenericDQue;
 
 interface
 
 uses
   Windows,
-  STConst, StBase, StList;
+  STConst, StGenericBase, StGenericList;
 
 type
-  TStDQue = class(TStList)
+  TStDQue<TData,TNode:TStListNode<TData>> = class(TStList<TData, TNode>)
+  strict private
+    class var FDestroyCount: integer;
+    class var FCreateCount: integer;
+
     public
-      procedure PushTail(Data : Pointer);
+    procedure AfterConstruction; override;
+    procedure BeforeDestruction; override;
+      procedure PushTail(Data : TData);
         {-Add element at tail of queue}
       procedure PopTail;
         {-Delete element at tail of queue, destroys its data}
-      procedure PeekTail(var Data : Pointer);
+      procedure PeekTail(var Data : TData);
         {-Return data at tail of queue}
 
-      procedure PushHead(Data : Pointer);
+      procedure PushHead(Data : TData);
         {-Add element at head of queue}
       procedure PopHead;
         {-Delete element at head of queue, destroys its data}
-      procedure PeekHead(var Data : Pointer);
+      procedure PeekHead(var Data : TData);
         {-Return data at head of queue}
+    class property CreateCount: integer read FCreateCount write FCreateCount;
+    class property DestroyCount: integer read FDestroyCount write FDestroyCount;
   end;
 
 {======================================================================}
@@ -76,7 +84,21 @@ implementation
 
 
 
-procedure TStDQue.PeekHead(var Data : Pointer);
+procedure TStDQue<TData, TNode>.AfterConstruction;
+begin
+  inherited AfterConstruction;
+
+  InterlockedIncrement(FCreateCount);
+end;
+
+procedure TStDQue<TData, TNode>.BeforeDestruction;
+begin
+  InterlockedIncrement(FDestroyCount);
+
+  inherited BeforeDestruction;
+end;
+
+procedure TStDQue<TData,TNode>.PeekHead(var Data : TData);
 begin
 {$IFDEF ThreadSafe}
   EnterCS;
@@ -93,7 +115,7 @@ begin
 {$ENDIF}
 end;
 
-procedure TStDQue.PeekTail(var Data : Pointer);
+procedure TStDQue<TData,TNode>.PeekTail(var Data : TData);
 begin
 {$IFDEF ThreadSafe}
   EnterCS;
@@ -110,7 +132,7 @@ begin
 {$ENDIF}
 end;
 
-procedure TStDQue.PopHead;
+procedure TStDQue<TData,TNode>.PopHead;
 begin
 {$IFDEF ThreadSafe}
   EnterCS;
@@ -125,7 +147,7 @@ begin
 {$ENDIF}
 end;
 
-procedure TStDQue.PopTail;
+procedure TStDQue<TData,TNode>.PopTail;
 begin
 {$IFDEF ThreadSafe}
   EnterCS;
@@ -140,7 +162,7 @@ begin
 {$ENDIF}
 end;
 
-procedure TStDQue.PushHead(Data : Pointer);
+procedure TStDQue<TData,TNode>.PushHead(Data : TData);
 begin
 {$IFDEF ThreadSafe}
   EnterCS;
@@ -154,7 +176,7 @@ begin
 {$ENDIF}
 end;
 
-procedure TStDQue.PushTail(Data : Pointer);
+procedure TStDQue<TData,TNode>.PushTail(Data : TData);
 begin
 {$IFDEF ThreadSafe}
   EnterCS;

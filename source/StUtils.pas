@@ -45,7 +45,7 @@ interface
 uses
   Windows, SysUtils, Classes,
 
-  StConst, StBase, StDate,
+  StConst, StGenericBase, StDate,
   StStrL; { long string routines }
 
 function SignL(L : Integer) : Integer;

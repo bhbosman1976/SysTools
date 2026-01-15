@@ -46,7 +46,7 @@ uses
   Classes,
   SysUtils,
   StConst,
-  StBase;
+  StGenericBase;
 
 {.Z+}
 type

@@ -17,8 +17,14 @@ program SysToolsTests;
 uses
   DUnitTestRunner,
   TestStBase in 'TestStBase.pas',
-  StBase in '..\source\StBase.pas',
+  StGenericBase in '..\source\StGenericBase.pas',
+  StGenericTree in '..\source\StGenericTree.pas',
+  StGenericList in '..\source\StGenericList.pas',
+  StGenericColl in '..\source\StGenericColl.pas',
+  StGenericDict in '..\source\StGenericDict.pas',
+  StDenericDQue in '..\source\StDenericDQue.pas',
   TestStUtils in 'TestStUtils.pas',
+  TestGenerics in 'TestGenerics.pas',
   TestStStrL in 'TestStStrL.pas';
 
 {$R *.RES}

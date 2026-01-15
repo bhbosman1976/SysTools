@@ -33,25 +33,16 @@
 
 {$I StDefine.inc}
 
-unit StBase;
+unit StGenericBase;
 
-{$IFDEF FPC}
-  {$MODE Delphi}
-  {$ASMMODE intel}
-{$ENDIF}
 
 interface
 
 uses
-  Windows,
-  Classes, SysUtils, Messages, StdCtrls,
-
-  StConst;
+  Windows, Classes, SysUtils, Messages, StdCtrls, StConst;
 
 const
-{.Z+}
   StMaxBlockSize = MaxLongInt;
-{.Z-}
 
 type
 {!!.01 - moved from StBase.pas }
@@ -66,19 +57,14 @@ type
 type
   TStHwnd = HWND;
 
-{-SysTools exception class tree}
 type
   EStException = class(Exception)     {ancestor to all SysTools exceptions}
-    protected {private}
-      FErrorCode : Integer;
-
-    public
-      constructor CreateResTP(Ident : Integer; Dummy : Word);
-      constructor CreateResFmtTP(Ident : Integer; const Args : array of const;
-                                 Dummy : Word);
-      property ErrorCode : Integer
-        read FErrorCode
-        write FErrorCode;
+  protected
+    FErrorCode : Integer;
+  public
+    constructor CreateResTP(Ident : Integer; Dummy : Word);
+    constructor CreateResFmtTP(Ident : Integer; const Args : array of const; Dummy : Word);
+    property ErrorCode : Integer read FErrorCode write FErrorCode;
   end;
   EStExceptionClass = class of EStException;
 
@@ -103,16 +89,12 @@ type
   EStPRNGError = class(EStException);        {Random number errors}
 
   EStExprError = class(EStException) {expression evaluator exceptions}
-    protected {private}
-      FErrorCol : Integer;
+  protected
+    FErrorCol : Integer;
   public
     constructor CreateResTPCol(Ident : Integer; Column : Integer; Dummy : Integer);
-    property ErrorColumn : Integer
-      {-Returns the string position at the start of the token where
-        the error was detected}
-        read FErrorCol;
+    property ErrorColumn : Integer read FErrorCol;
   end;
-
 
 const
 {.Z+}
@@ -150,210 +132,65 @@ type
 {.Z-}
 
 type
-  {the SysTools floating point type}
-    {$IFOPT N+}
     TStFloat = Extended;
-    {$ELSE}
-    TStFloat = Real;
-    {$ENDIF}
 
 const
   WMCOPYID : DWORD = $AFAF;
 
 type
-  TStNode = class(TPersistent)
-{.Z+}
-  protected {private}
-    FData : Pointer;
-{.Z-}
+  TStNode<TData> = class(TObject)
+  strict private
+    class var FDestroyCount: integer;
+    class var FCreateCount: integer;
+  protected
+    FData : TData;
   public
-    constructor Create(AData : Pointer);
-      virtual;
-    property Data : Pointer
-       read FData
-       write FData;
+    constructor Create; virtual;
+    procedure AfterConstruction; override;
+    procedure BeforeDestruction; override;
+    procedure Init(const AData: TData); virtual;
+    property Data : TData read FData write FData;
+    class property CreateCount: integer read FCreateCount write FCreateCount;
+    class property DestroyCount: integer read FDestroyCount write FDestroyCount;
   end;
 
-{.Z+}
-  TStNodeClass = class of TStNode;
-{.Z-}
+  TCompareFunc<TData> = function(Data1, Data2 : TData) : Integer;
+  TStCompareEvent<TData> = procedure(Sender : TObject; Data1, Data2 : TData; var Compare : Integer) of object;
+  TDisposeProc<TData> = procedure(Data : TData);
+  TStDisposeEvent<TData> = procedure(Sender : TObject; Data : TData) of object;
 
-  TStContainer = class;
-
-  TCompareFunc =
-    function(Data1, Data2 : Pointer) : Integer;
-  TStCompareEvent =
-    procedure(Sender : TObject; Data1, Data2 : Pointer;  var Compare : Integer)
-    of object;
-
-  TDisposeDataProc =
-    procedure(Data : Pointer);
-  TStDisposeDataEvent =
-    procedure(Sender : TObject; Data : Pointer)
-    of object;
-
-  TLoadDataFunc =
-    function(Reader : TReader) : Pointer;
-  TStLoadDataEvent =
-    procedure(Sender : TObject; Reader : TReader; var Data : Pointer)
-    of object;
-
-  TStoreDataProc =
-    procedure(Writer : TWriter; Data : Pointer);
-  TStStoreDataEvent =
-    procedure(Sender : TObject; Writer : TWriter; Data : Pointer)
-    of object;
-
-  TStringCompareFunc =
-    function(const String1, String2 : string) : Integer;
-  TStStringCompareEvent =
-    procedure(Sender : TObject; const String1, String2 : string; var Compare : Integer)
-    of object;
-
-  TUntypedCompareFunc =
-    function(const El1, El2) : Integer;
-  TStUntypedCompareEvent =
-    procedure(Sender : TObject; const El1, El2; var Compare : Integer)
-    of object;
-
-  TIterateFunc =
-    function(Container : TStContainer; Node : TStNode; OtherData : Pointer) : Boolean;
-  TIteratePointerFunc =
-    function(Container : TStContainer; Data, OtherData : Pointer) : Boolean;
-  TIterateUntypedFunc =
-    function(Container : TStContainer; var Data; OtherData : Pointer) : Boolean;
-
-  TStContainer = class(TPersistent)
-  {.Z+}
-  protected {private}
-    {property instance variables}
-    FCompare     : TCompareFunc;
-    FDisposeData : TDisposeDataProc;
-    FLoadData    : TLoadDataFunc;
-    FStoreData   : TStoreDataProc;
-
-    {event variables}
-    FOnCompare     : TStCompareEvent;
-    FOnDisposeData : TStDisposeDataEvent;
-    FOnLoadData    : TStLoadDataEvent;
-    FOnStoreData   : TStStoreDataEvent;
-
-    {private instance variables}
-    {$IFDEF ThreadSafe}
-    conThreadSafe  : TRTLCriticalSection;
-    {$ENDIF}
-
-    procedure SetCompare(C : TCompareFunc);
-    procedure SetDisposeData(D : TDisposeDataProc);
-    procedure SetLoadData(L : TLoadDataFunc);
-    procedure SetStoreData(S : TStoreDataProc);
-
+  TStContainer<TData> = class(TObject)
+  strict private
+    class var FDestroyCount: integer;
+    class var FCreateCount: integer;
   protected
-    conNodeClass : TStNodeClass;
+    FCompare     : TCompareFunc<TData>;
+    FDisposeData : TDisposeProc<TData>;
+    FOnCompare     : TStCompareEvent<TData>;
+    FOnDisposeData : TStDisposeEvent<TData>;
+    conThreadSafe  : TRTLCriticalSection;
+  protected
     conNodeProt  : Integer;
     FCount       : Integer;
-
-    {protected undocumented methods}
-    function AssignPointers(Source : TPersistent; AssignData : TIteratePointerFunc) : boolean;
-    function AssignUntypedVars(Source : TPersistent; AssignData : TIterateUntypedFunc) : boolean;
-    procedure ForEachPointer(Action : TIteratePointerFunc; OtherData : Pointer);
-      virtual;
-    procedure ForEachUntypedVar(Action : TIterateUntypedFunc; OtherData : pointer);
-      virtual;
-    procedure GetArraySizes(var RowCount, ColCount, ElSize : Cardinal);
-      virtual;
-    procedure SetArraySizes(RowCount, ColCount, ElSize : Cardinal);
-      virtual;
-    function StoresPointers : boolean;
-      virtual;
-    function StoresUntypedVars : boolean;
-      virtual;
-
-    {protected documented}
     procedure IncNodeProtection;
-      {-Prevent container Destroy from destroying its nodes}
     procedure DecNodeProtection;
-      {-Allow container Destroy to destroy its nodes}
     procedure EnterCS;
-      {-Enter critical section for this instance}
     procedure LeaveCS;
-      {-Leave critical section for this instance}
-    {.Z-}
   public
-    constructor CreateContainer(NodeClass : TStNodeClass; Dummy : Integer);
-      {-Create an abstract container (called by descendants)}
-    destructor Destroy;
-      override;
-      {-Destroy a collection, and perhaps its nodes}
-    procedure Clear;
-      virtual; abstract;
-      {-Remove all elements from collection}
-    procedure DisposeNodeData(P : TStNode);
-      {-Destroy the data associated with a node}
-
-    {wrapper methods for using events or proc/func pointers}
-    function DoCompare(Data1, Data2 : Pointer) : Integer;
-      virtual;
-    procedure DoDisposeData(Data : Pointer);
-      virtual;
-    function DoLoadData(Reader : TReader) : Pointer;
-      virtual;
-    procedure DoStoreData(Writer : TWriter; Data : Pointer);
-      virtual;
-
-    procedure LoadFromFile(const FileName : string);
-      dynamic;
-      {-Create a container and its data from a file}
-    procedure LoadFromStream(S : TStream);
-      dynamic; abstract;
-      {-Create a container and its data from a stream}
-    procedure StoreToFile(const FileName : string);
-      dynamic;
-      {-Create a container and its data from a file}
-    procedure StoreToStream(S : TStream);
-      dynamic; abstract;
-      {-Write a container and its data to a stream}
-
-    property Count : Integer
-      {-Return the number of elements in the collection}
-      read FCount;
-
-    property Compare : TCompareFunc
-      {-Set or read the node comparison function}
-      read FCompare
-      write SetCompare;
-
-    property DisposeData : TDisposeDataProc
-      {-Set or read the node data dispose function}
-      read FDisposeData
-      write SetDisposeData;
-
-    property LoadData : TLoadDataFunc
-      {-Set or read the node data load function}
-      read FLoadData
-      write SetLoadData;
-
-    property StoreData : TStoreDataProc
-      {-Set or read the node data load function}
-      read FStoreData
-      write SetStoreData;
-
-    {events}
-    property OnCompare : TStCompareEvent
-      read FOnCompare
-      write FOnCompare;
-
-    property OnDisposeData : TStDisposeDataEvent
-      read FOnDisposeData
-      write FOnDisposeData;
-
-    property OnLoadData : TStLoadDataEvent
-      read FOnLoadData
-      write FOnLoadData;
-
-    property OnStoreData : TStStoreDataEvent
-      read FOnStoreData
-      write FOnStoreData;
+    constructor Create;
+    destructor Destroy; override;
+    procedure AfterConstruction; override;
+    procedure BeforeDestruction; override;
+    procedure Clear; virtual; abstract;
+    procedure DisposeNodeData(P : TStNode<TData>);
+    procedure DoDisposeData(Data : TData); virtual;
+    property Count : Integer read FCount;
+    property Compare : TCompareFunc<TData> read FCompare write FCompare;
+    property DisposeData : TDisposeProc<TData> read FDisposeData write FDisposeData;
+    property OnCompare : TStCompareEvent<TData> read FOnCompare write FOnCompare;
+    property OnDisposeData : TStDisposeEvent<TData> read FOnDisposeData write FOnDisposeData;
+    class property CreateCount: integer read FCreateCount write FCreateCount;
+    class property DestroyCount: integer read FDestroyCount write FDestroyCount;
   end;
 
   TAssignRowData = record
@@ -389,9 +226,6 @@ type
   end;
   {.Z-}
 
-{---Generic node routines---}
-function DestroyNode(Container : TStContainer; Node : TStNode;
-                     OtherData : Pointer) : Boolean;
   {-Generic function to pass to iterator to destroy a container node}
 
 
@@ -444,11 +278,7 @@ procedure RaiseStWin32ErrorEx(ExceptionClass : EStExceptionClass; Code : Integer
 implementation
 
 uses
-  Math, Character
-{$ifdef FPC}
-  , Delphi.Character
-{$endif}
-  ;
+  Math, Character;
 
 procedure RaiseStError(ExceptionClass : EStExceptionClass; Code : Integer);
 var
@@ -497,19 +327,7 @@ begin
 end;
 
 
-function AbstractCompare(Data1, Data2 : Pointer) : Integer; far;
-begin
-  raise ESTContainerError.CreateResTP(stscNoCompare, 0);
-end;
 
-function DestroyNode(Container : TStContainer;
-                     Node : TStNode;
-                     OtherData : Pointer) : Boolean;
-begin
-  Container.DisposeNodeData(Node);
-  Node.Free;
-  Result := True;
-end;
 
 procedure HugeFillStruc(var ADest; ADestSize: Integer; const ASource; ASourceSize: Integer);
 var
@@ -666,153 +484,81 @@ begin
   raise E;
 end;
 
-{----------------------------------------------------------------------}
-
-constructor TStNode.Create(AData : Pointer);
+procedure TStNode<TData>.AfterConstruction;
 begin
-  Data := AData;
+  inherited AfterConstruction;
+
+  InterlockedIncrement(FCreateCount);
+end;
+
+procedure TStNode<TData>.BeforeDestruction;
+begin
+  InterlockedIncrement(FDestroyCount);
+
+  inherited BeforeDestruction;
 end;
 
 {----------------------------------------------------------------------}
 
-function TStContainer.AssignPointers(Source : TPersistent;
-                                     AssignData : TIteratePointerFunc) : boolean;
+constructor TStNode<TData>.Create;
 begin
-  Result := false;
-  if (Source is TStContainer) then
-    if TStContainer(Source).StoresPointers then
-      begin
-        Clear;
-        TStContainer(Source).ForEachPointer(AssignData, Self);
-        Result := true;
-      end;
+
 end;
 
-function TStContainer.AssignUntypedVars(Source : TPersistent;
-                                        AssignData : TIterateUntypedFunc) : boolean;
-var
-  RowCount : Cardinal;
-  ColCount : Cardinal;
-  ElSize : Cardinal;
+procedure TStNode<TData>.Init(const AData: TData);
 begin
-  Result := false;
-  if (Source is TStContainer) then
-    if TStContainer(Source).StoresUntypedVars then
-      begin
-        Clear;
-        TStContainer(Source).GetArraySizes(RowCount, ColCount, ElSize);
-        SetArraySizes(RowCount, ColCount, ElSize);
-        TStContainer(Source).ForEachUntypedVar(AssignData, Self);
-        Result := true;
-      end;
+  FData := AData;
 end;
 
-procedure TStContainer.ForEachPointer(Action : TIteratePointerFunc;
-                                      OtherData : pointer);
+
+procedure TStContainer<TData>.AfterConstruction;
 begin
-  {do nothing}
+  inherited AfterConstruction;
+
+  InterlockedIncrement(FCreateCount);
 end;
 
-procedure TStContainer.ForEachUntypedVar(Action : TIterateUntypedFunc;
-                                            OtherData : pointer);
+procedure TStContainer<TData>.BeforeDestruction;
 begin
-  {do nothing}
+  InterlockedIncrement(FDestroyCount);
+
+  inherited BeforeDestruction;
 end;
 
-procedure TStContainer.GetArraySizes(var RowCount, ColCount, ElSize : Cardinal);
-begin
-  RowCount := 0;
-  ColCount := 0;
-  ElSize := 0;
-end;
+{----------------------------------------------------------------------}
 
-procedure TStContainer.SetArraySizes(RowCount, ColCount, ElSize : Cardinal);
+constructor TStContainer<TData>.Create;
 begin
-  {do nothing}
-end;
-
-procedure TStContainer.SetCompare(C : TCompareFunc);
-begin
-  FCompare := C;
-end;
-
-procedure TStContainer.SetDisposeData(D : TDisposeDataProc);
-begin
-  FDisposeData := D;
-end;
-
-procedure TStContainer.SetLoadData(L : TLoadDataFunc);
-begin
-  FLoadData := L;
-end;
-
-procedure TStContainer.SetStoreData(S : TStoreDataProc);
-begin
-  FStoreData := S;
-end;
-
-function TStContainer.StoresPointers : boolean;
-begin
-  Result := false;
-end;
-
-function TStContainer.StoresUntypedVars : boolean;
-begin
-  Result := false;
-end;
-
-constructor TStContainer.CreateContainer(NodeClass : TStNodeClass; Dummy : Integer);
-begin
-{$IFDEF ThreadSafe}
   Windows.InitializeCriticalSection(conThreadSafe);
-{$ENDIF}
-
-  FCompare := AbstractCompare;
-  conNodeClass := NodeClass;
-
   inherited Create;
 end;
 
-procedure TStContainer.DecNodeProtection;
+procedure TStContainer<TData>.DecNodeProtection;
 begin
   Dec(conNodeProt);
 end;
 
-destructor TStContainer.Destroy;
+destructor TStContainer<TData>.Destroy;
 begin
   if conNodeProt = 0 then
     Clear;
-{$IFDEF ThreadSafe}
   Windows.DeleteCriticalSection(conThreadSafe);
-{$ENDIF}
   inherited Destroy;
 end;
 
-procedure TStContainer.DisposeNodeData(P : TStNode);
+procedure TStContainer<TData>.DisposeNodeData(P : TStNode<TData>);
 begin
-{$IFDEF ThreadSafe}
   EnterCS;
   try
-{$ENDIF}
     if Assigned(P) then
       DoDisposeData(P.Data);
-{$IFDEF ThreadSafe}
   finally
     LeaveCS;
   end;
-{$ENDIF}
 end;
 
-function TStContainer.DoCompare(Data1, Data2 : Pointer) : Integer;
-begin
-  Result := 0;
-  if Assigned(FOnCompare) then
-    FOnCompare(Self, Data1, Data2, Result)
-  else if Assigned(FCompare) then
-    Result := FCompare(Data1, Data2);
-end;
 
-procedure TStContainer.DoDisposeData(Data : Pointer);
+procedure TStContainer<TData>.DoDisposeData(Data : TData);
 begin
   if Assigned(FOnDisposeData) then
     FOnDisposeData(Self, Data)
@@ -820,69 +566,21 @@ begin
     FDisposeData(Data);
 end;
 
-function TStContainer.DoLoadData(Reader : TReader) : Pointer;
+procedure TStContainer<TData>.EnterCS;
 begin
-  Result := nil;
-  if Assigned(FOnLoadData) then
-    FOnLoadData(Self, Reader, Result)
-  else if Assigned(FLoadData) then
-    Result := FLoadData(Reader)
-  else
-    RaiseContainerError(stscNoLoadData);
-end;
-
-procedure TStContainer.DoStoreData(Writer : TWriter; Data : Pointer);
-begin
-  if Assigned(FOnStoreData) then
-    FOnStoreData(Self, Writer, Data)
-  else if Assigned(FStoreData) then
-    FStoreData(Writer, Data)
-  else
-    RaiseContainerError(stscNoStoreData);
-end;
-
-procedure TStContainer.EnterCS;
-begin
-{$IFDEF ThreadSafe}
   EnterCriticalSection(conThreadSafe);
-{$ENDIF}
 end;
 
-procedure TStContainer.IncNodeProtection;
+procedure TStContainer<TData>.IncNodeProtection;
 begin
   Inc(conNodeProt);
 end;
 
-procedure TStContainer.LeaveCS;
+procedure TStContainer<TData>.LeaveCS;
 begin
-{$IFDEF ThreadSafe}
   LeaveCriticalSection(conThreadSafe);
-{$ENDIF}
 end;
 
-procedure TStContainer.LoadFromFile(const FileName : string);
-var
-  S : TStream;
-begin
-  S := TFileStream.Create(FileName, fmOpenRead + fmShareDenyWrite);
-  try
-    LoadFromStream(S);
-  finally
-    S.Free;
-  end;
-end;
-
-procedure TStContainer.StoreToFile(const FileName : string);
-var
-  S : TStream;
-begin
-  S := TFileStream.Create(FileName, fmCreate);
-  try
-    StoreToStream(S);
-  finally
-    S.Free;
-  end;
-end;
 
 
 {*** TStComponent ***}
@@ -906,6 +604,7 @@ end;
 procedure TStBaseEdit.SetVersion(const Value : string);
 begin
 end;
+
 
 end.
 

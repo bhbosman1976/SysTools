@@ -45,174 +45,156 @@
   faster and speeds up random calls to Nth by about a factor of two.
 }
 
-unit StList;
+unit StGenericList;
 
 interface
 
 uses
-  Windows, SysUtils, Classes,
-  StConst, StBase;
+  Windows, SysUtils, Classes, StConst, StGenericBase;
 
 type
-  TStListNode = class(TStNode)
-  {.Z+}
-    protected
-      FNext : TStListNode;     {Next node}
-      FPrev : TStListNode;     {Previous node}
-
-  {.Z-}
-    public
-      constructor Create(AData : Pointer); override;
-        {-Initialize node}
-  end;
-
-  TStList = class(TStContainer)
-  {.Z+}
+  TStListNode<TData> = class(TStNode<TData>)
+  strict private
+    class var FDestroyCount: integer;
+    class var FCreateCount: integer;
   protected
-    {property instance variables}
-    FHead : TStListNode;     {Start of list}
-    FTail : TStListNode;     {End of list}
-
-    {private instance variables}
-    lsLastI : Integer;        {Last index requested from Nth}
-    lsLastP : TStListNode;    {Last node returned by Nth}
-
-    {protected undocumented methods}
-    procedure ForEachPointer(Action : TIteratePointerFunc;
-                             OtherData : pointer);
-      override;
-  function StoresPointers : boolean;
-    override;
-  {.Z-}
+    FNext : TStListNode<TData>;
+    FPrev : TStListNode<TData>;
   public
-    constructor Create(NodeClass : TStNodeClass); virtual;
-      {-Initialize an empty list}
-
-    procedure LoadFromStream(S : TStream); override;
-      {-Create a list and its data from a stream}
-    procedure StoreToStream(S : TStream); override;
-      {-Write a list and its data to a stream}
-
-    procedure Clear; override;
-      {-Remove all nodes from container but leave it instantiated}
-
-    function Append(Data : Pointer) : TStListNode;
-      {-Add a new node to the end of a list}
-    function Insert(Data : Pointer) : TStListNode;
-      {-Insert a new node at the start of a list}
-    function Place(Data : Pointer; P : TStListNode) : TStListNode;
-      {-Place a new node into a list after an existing node P}
-    function PlaceBefore(Data : Pointer; P : TStListNode) : TStListNode;
-      {-Place a new node into a list before an existing node P}
-    function InsertSorted(Data : Pointer) : TStListNode;
-      {-Insert a new node in sorted order}
-    procedure MoveToHead(P : TStListNode);
-      {-Move P to the head of the list}
-
-    procedure Assign(Source: TPersistent); override;
-      {-Assign another container's contents to this one}
-    procedure Join(P : TStListNode; L : TStList);
-      {-Join list L after P in the current list. L is freed}
-    function Split(P : TStListNode) : TStList;
-      {-Split list, creating a new list that starts with P}
-
-    procedure Sort;
-      {-Put the list into sorted order}
-
-    procedure Delete(P : TStListNode);
-      {-Remove an element and dispose of its contents}
-
-    function Next(P : TStListNode) : TStListNode;
-      {-Return the node after P, nil if none}
-    function Prev(P : TStListNode) : TStListNode;
-      {-Return the node before P, nil if none}
-    function Nth(Index : Integer) : TStListNode;
-      {-Return the Index'th node in the list, Index >= 0 (cached)}
-    function NthFrom(P : TStListNode; Index : Integer) : TStListNode;
-      {-Return the Index'th node from P, either direction}
-    function Posn(P : TStListNode) : Integer;
-      {-Return the ordinal position of an element in the list}
-    function Distance(P1, P2 : TStListNode) : Integer;
-      {-Return the number of nodes separating P1 and P2 (signed)}
-    function Find(Data : Pointer) : TStListNode;
-      {-Return the first node whose data equals Data}
-    function Iterate(Action : TIterateFunc; Up : Boolean;
-                     OtherData : Pointer) : TStListNode;
-      {-Call Action for all the nodes, returning the last node visited}
-
-    property Head : TStListNode
-      {-Return the head node}
-      read FHead;
-    property Tail : TStListNode
-      {-Return the tail node}
-      read FTail;
-    property Items[Index : Integer] : TStListNode
-      {-Return the Index'th node, 0-based}
-      read Nth;
-      default;
+    constructor Create(); override;
+    procedure AfterConstruction; override;
+    procedure BeforeDestruction; override;
+    class property CreateCount: integer read FCreateCount write FCreateCount;
+    class property DestroyCount: integer read FDestroyCount write FDestroyCount;
   end;
 
-  {.Z+}
-  TStListClass = class of TStList;
-  {.Z-}
+  TStList<TData,TNode:TStListNode<TData>> = class(TStContainer<TData>)
+  strict private
+    class var FDestroyCount: integer;
+    class var FCreateCount: integer;
+
+  public
+    type TIterateFunc<TOtherData> = function(Container : TStList<TData,TNode>; Node : TStListNode<TData>; OtherData : TOtherData) : Boolean of object;
+    class function DestroyNode(Container : TStList<TData,TNode>; Node : TStListNode<TData>; OtherData : Pointer) : Boolean;
+    class function FindNode(Container : TStList<TData,TNode>; Node : TStListNode<TData>; OtherData : TData) : Boolean;
+    class var ClassCritSect : TRTLCriticalSection;
+    class procedure EnterClassCS;
+    class procedure LeaveClassCS;
+  protected
+    FHead : TStListNode<TData>;
+    FTail : TStListNode<TData>;
+    lsLastI : Integer;
+    lsLastP : TStListNode<TData>;
+  public
+    class constructor Create;
+    class destructor Destroy;
+    constructor Create(); virtual;
+    procedure AfterConstruction; override;
+    procedure BeforeDestruction; override;
+    function DoCompare(Data1, Data2 : TData) : Integer;
+    procedure Clear; override;
+    function Append(Data : TData) : TStListNode<TData>;
+    function Insert(Data : TData) : TStListNode<TData>;
+    function Place(Data : Pointer; P : TStListNode<TData>) : TStListNode<TData>;
+    function PlaceBefore(Data : Pointer; P : TStListNode<TData>) : TStListNode<TData>;
+    function InsertSorted(Data : TData) : TStListNode<TData>;
+    procedure MoveToHead(P : TStListNode<TData>);
+    procedure Join(P : TStListNode<TData>; L : TStList<TData,TNode>);
+    procedure Sort;
+    procedure Delete(P : TStListNode<TData>);
+    function Next(P : TStListNode<TData>) : TStListNode<TData>;
+    function Prev(P : TStListNode<TData>) : TStListNode<TData>;
+    function Nth(Index : Integer) : TStListNode<TData>;
+    function NthFrom(P : TStListNode<TData>; Index : Integer) : TStListNode<TData>;
+    function Posn(P : TStListNode<TData>) : Integer;
+    function Distance(P1, P2 : TStListNode<TData>) : Integer;
+    function Find(Data : Pointer) : TStListNode<TData>;
+    function Iterate<TOtherData>(Action : TIterateFunc<TOtherData>; Up : Boolean; OtherData : TOtherData) : TStListNode<TData>;
+    property Head : TStListNode<TData> read FHead;
+    property Tail : TStListNode<TData> read FTail;
+    property Items[Index : Integer] : TStListNode<TData> read Nth; default;
+    class property CreateCount: integer read FCreateCount write FCreateCount;
+    class property DestroyCount: integer read FDestroyCount write FDestroyCount;
+  end;
 
 {======================================================================}
 
 implementation
 
-{$IFDEF ThreadSafe}
-var
-  ClassCritSect : TRTLCriticalSection;
-{$ENDIF}
 
-procedure EnterClassCS;
+class destructor TStList<TData,TNode>.Destroy;
 begin
-{$IFDEF ThreadSafe}
-  EnterCriticalSection(ClassCritSect);
-{$ENDIF}
+
+  Windows.DeleteCriticalSection(ClassCritSect);
+
 end;
 
-procedure LeaveClassCS;
+class function TStList<TData,TNode>.DestroyNode(Container : TStList<TData,TNode>; Node : TStListNode<TData>; OtherData : Pointer) : Boolean;
 begin
-{$IFDEF ThreadSafe}
-  LeaveCriticalSection(ClassCritSect);
-{$ENDIF}
+  Container.DisposeNodeData(Node);
+  Node.Free;
+  Result := True;
 end;
 
-constructor TStListNode.Create(AData : Pointer);
+class procedure TStList<TData,TNode>.EnterClassCS;
 begin
-  inherited Create(AData);
+
+  EnterCriticalSection(TStList<TData,TNode>.ClassCritSect);
+
+end;
+
+class procedure TStList<TData,TNode>.LeaveClassCS;
+begin
+
+    LeaveCriticalSection(TStList<TData,TNode>.ClassCritSect);
+
+end;
+
+procedure TStListNode<TData>.AfterConstruction;
+begin
+  inherited AfterConstruction;
+
+  InterlockedIncrement(FCreateCount);
+end;
+
+procedure TStListNode<TData>.BeforeDestruction;
+begin
+  InterlockedIncrement(FDestroyCount);
+
+  inherited BeforeDestruction;
+end;
+
+constructor TStListNode<TData>.Create;
+begin
+  inherited Create();
 end;
 
 {----------------------------------------------------------------------}
 
-function FindNode(Container : TStContainer;
-                  Node : TStNode;
-                  OtherData : Pointer) : Boolean; far;
+class function TStList<TData,TNode>.FindNode(Container : TStList<TData,TNode>; Node : TStListNode<TData>; OtherData : TData) : Boolean;
 begin
   Result := (Node.Data <> OtherData);
 end;
 
-function AssignData(Container : TStContainer;
-                    Data, OtherData : Pointer) : Boolean; far;
-  var
-    OurList : TStList absolute OtherData;
-  begin
-    OurList.Append(Data);
-    Result := true;
-  end;
+procedure TStList<TData, TNode>.AfterConstruction;
+begin
+  inherited AfterConstruction;
+
+  InterlockedIncrement(FCreateCount);
+end;
 
 {----------------------------------------------------------------------}
 
-function TStList.Append(Data : Pointer) : TStListNode;
+function TStList<TData,TNode>.Append(Data : TData) : TStListNode<TData>;
 var
-  N : TStListNode;
+  N : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
-    N := TStListNode(conNodeClass.Create(Data));
+
+    N := TNode.create;
+    N.Init(Data);
     N.FPrev := FTail;
     if not Assigned(FHead) then begin
       {Special case for first node}
@@ -225,68 +207,64 @@ begin
     end;
     Inc(FCount);
     Result := N;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-procedure TStList.Assign(Source: TPersistent);
-  begin
-    {$IFDEF ThreadSafe}
-    EnterCS;
-    try
-    {$ENDIF}
-      {The only containers that we allow to be assigned to a linked list are
-         - another SysTools linked list (TStList)
-         - a SysTools binary search tree (TStTree)
-         - a SysTools collection (TStCollection, TStSortedCollection)}
-      if not AssignPointers(Source, AssignData) then
-        inherited Assign(Source);
-    {$IFDEF ThreadSafe}
-    finally
-      LeaveCS;
-    end;{try..finally}
-    {$ENDIF}
-  end;
 
-procedure TStList.Clear;
+procedure TStList<TData, TNode>.BeforeDestruction;
 begin
-{$IFDEF ThreadSafe}
+  InterlockedIncrement(FDestroyCount);
+
+  inherited BeforeDestruction;
+end;
+
+procedure TStList<TData,TNode>.Clear;
+begin
+
   EnterCS;
   try
-{$ENDIF}
+
     if Count > 0 then begin
-      Iterate(DestroyNode, True, nil);
+      Iterate<Pointer>(DestroyNode, True, nil);
       FCount := 0;
     end;
     FHead := nil;
     FTail := nil;
     lsLastI := -1;
     lsLastP := nil;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-constructor TStList.Create(NodeClass : TStNodeClass);
+class constructor TStList<TData,TNode>.Create;
 begin
-  CreateContainer(NodeClass, 0);
+
+  Windows.InitializeCriticalSection(ClassCritSect);
+
+end;
+
+constructor TStList<TData,TNode>.Create();
+begin
+  inherited create;
   Clear;
 end;
 
-procedure TStList.Delete(P : TStListNode);
+procedure TStList<TData,TNode>.Delete(P : TStListNode<TData>);
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if (not Assigned(P)) or (Count <= 0) then
       Exit;
-    if not (P is conNodeClass) then
+    if not (P is TNode) then
       RaiseContainerError(stscBadType);
 
     with P do begin
@@ -308,22 +286,22 @@ begin
     P.Free;
     Dec(FCount);
     lsLastI := -1;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.Distance(P1, P2 : TStListNode) : Integer;
+function TStList<TData,TNode>.Distance(P1, P2 : TStListNode<TData>) : Integer;
 var
   I : Integer;
-  N : TStListNode;
+  N : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     {Count forward}
     I := 0;
     N := P1;
@@ -350,61 +328,38 @@ begin
 
     {Not on same list}
     Result := MaxLongInt;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.Find(Data : Pointer) : TStListNode;
+function TStList<TData,TNode>.Find(Data : Pointer) : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
-    Result := Iterate(FindNode, True, Data);
-{$IFDEF ThreadSafe}
+
+    Result := Iterate<TData>(FindNode, True, Data);
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-procedure TStList.ForEachPointer(Action : TIteratePointerFunc;
-                                 OtherData : pointer);
+
+function TStList<TData,TNode>.Insert(Data : TData) : TStListNode<TData>;
 var
-  N : TStListNode;
-  P : TStListNode;
+  N : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    N := FHead;
-    while Assigned(N) do begin
-      P := N.FNext;
-      if Action(Self, N.Data, OtherData) then
-        N := P
-      else
-        Exit;
-    end;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
 
-function TStList.Insert(Data : Pointer) : TStListNode;
-var
-  N : TStListNode;
-begin
-{$IFDEF ThreadSafe}
   EnterCS;
   try
-{$ENDIF}
-    N := TStListNode(conNodeClass.Create(Data));
+
+    N := TNode.Create;
+    N.Init(Data);
     {N.FPrev := nil;}
     N.FNext := FHead;
     if not Assigned(FHead) then
@@ -417,23 +372,24 @@ begin
     Inc(FCount);
     lsLastI := -1;
     Result := N;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.InsertSorted(Data : Pointer) : TStListNode;
+function TStList<TData,TNode>.InsertSorted(Data : TData) : TStListNode<TData>;
 var
-  N : TStListNode;
-  P : TStListNode;
+  N : TStListNode<TData>;
+  P : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
-    N := TStListNode(conNodeClass.Create(Data));
+
+    N := TNode.create;
+    N.Init(Data);
     Result := N;
     Inc(FCount);
     lsLastI := -1;
@@ -464,23 +420,23 @@ begin
       N.FPrev := FTail;
       FTail := N;
     end;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.Iterate(Action : TIterateFunc; Up : Boolean;
-                         OtherData : Pointer) : TStListNode;
+function TStList<TData,TNode>.Iterate<TOtherData>(Action : TIterateFunc<TOtherData>; Up : Boolean;
+                         OtherData : TOtherData) : TStListNode<TData>;
 var
-  N : TStListNode;
-  P : TStListNode;
+  N : TStListNode<TData>;
+  P : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if Up then begin
       N := FHead;
       while Assigned(N) do begin
@@ -505,24 +461,24 @@ begin
       end;
     end;
     Result := nil;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-procedure TStList.Join(P : TStListNode; L : TStList);
+procedure TStList<TData,TNode>.Join(P : TStListNode<TData>; L : TStList<TData,TNode>);
 var
-  N : TStListNode;
-  Q : TStListNode;
+  N : TStListNode<TData>;
+  Q : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterClassCS;
   EnterCS;
   L.EnterCS;
   try
-{$ENDIF}
+
     if Assigned(L) then begin
       if Assigned(P) and (L.Count > 0) then begin
         {Patch the list into the current one}
@@ -546,71 +502,22 @@ begin
       L.IncNodeProtection;
       L.Free;
     end;
-{$IFDEF ThreadSafe}
+
   finally
     L.LeaveCS;
     LeaveCS;
     LeaveClassCS;
   end;
-{$ENDIF}
+
 end;
 
-procedure TStList.LoadFromStream(S : TStream);
-var
-  Data : pointer;
-  Reader : TReader;
-  StreamedClass : TPersistentClass;
-  StreamedNodeClass : TPersistentClass;
-  StreamedClassName : string;
-  StreamedNodeClassName : string;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    Clear;
-    Reader := TReader.Create(S, 1024);
-    try
-      with Reader do
-        begin
-          StreamedClassName := ReadString;
-          StreamedClass := GetClass(StreamedClassName);
-          if (StreamedClass = nil) then
-            RaiseContainerErrorFmt(stscUnknownClass, [StreamedClassName]);
-          if (not IsOrInheritsFrom(StreamedClass, Self.ClassType)) or
-              (not IsOrInheritsFrom(TStList, StreamedClass)) then
-            RaiseContainerError(stscWrongClass);
-          StreamedNodeClassName := ReadString;
-          StreamedNodeClass := GetClass(StreamedNodeClassName);
-          if (StreamedNodeClass = nil) then
-            RaiseContainerErrorFmt(stscUnknownNodeClass, [StreamedNodeClassName]);
-          if (not IsOrInheritsFrom(StreamedNodeClass, conNodeClass)) or
-              (not IsOrInheritsFrom(TStListNode, StreamedNodeClass)) then
-            RaiseContainerError(stscWrongNodeClass);
-          ReadListBegin;
-          while not EndOfList do
-            begin
-              Data := DoLoadData(Reader);
-              Append(Data);
-            end;
-          ReadListEnd;
-        end;
-    finally
-      Reader.Free;
-    end;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
 
-procedure TStList.MoveToHead(P : TStListNode);
+procedure TStList<TData,TNode>.MoveToHead(P : TStListNode<TData>);
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if Assigned(P) then
       if P <> Head then begin
         with P do begin
@@ -627,36 +534,36 @@ begin
         FHead.FPrev := P;
         FHead := P;
      end;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.Next(P : TStListNode) : TStListNode;
+function TStList<TData,TNode>.Next(P : TStListNode<TData>) : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     Result := P.FNext;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.Nth(Index : Integer) : TStListNode;
+function TStList<TData,TNode>.Nth(Index : Integer) : TStListNode<TData>;
 var
   MinI : Integer;
-  MinP : TStListNode;
+  MinP : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if (Index < 0) or (Index >= FCount) then
       Result := nil
     else begin
@@ -681,23 +588,23 @@ begin
       lsLastI := Index;
       lsLastP := Result;
     end;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.NthFrom(P : TStListNode; Index : Integer) : TStListNode;
+function TStList<TData,TNode>.NthFrom(P : TStListNode<TData>; Index : Integer) : TStListNode<TData>;
 var
   I : Integer;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if Assigned(P) then begin
-      if not (P is conNodeClass) then
+      if not (P is TNode) then
         RaiseContainerError(stscBadType);
       if Index > 0 then begin
         for I := 1 to Index do begin
@@ -714,27 +621,28 @@ begin
       end;
     end;
     Result := P;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.Place(Data : Pointer; P : TStListNode) : TStListNode;
+function TStList<TData,TNode>.Place(Data : Pointer; P : TStListNode<TData>) : TStListNode<TData>;
 var
-  N : TStListNode;
+  N : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if not Assigned(P) then
       Result := Insert(Data)
     else if P = FTail then
       Result := Append(Data)
     else begin
-      N := TStListNode(conNodeClass.Create(Data));
+      N := TNode.Create;
+      N.Init(Data);
       N.FPrev := P;
       N.FNext := P.FNext;
       P.FNext.FPrev := N;
@@ -743,27 +651,28 @@ begin
       lsLastI := -1;
       Result := N;
     end;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.PlaceBefore(Data : Pointer; P : TStListNode) : TStListNode;
+function TStList<TData,TNode>.PlaceBefore(Data : Pointer; P : TStListNode<TData>) : TStListNode<TData>;
 var
-  N : TStListNode;
+  N : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if (not Assigned(P)) or (P = Head) then
       {Place the new element at the start of the list}
       Result := Insert(Data)
     else begin
       {Patch in the new element}
-      N := TStListNode(conNodeClass.Create(Data));
+      N := TNode.create;
+      N.Init(Data);
       N.FNext := P;
       N.FPrev := P.FPrev;
       P.FPrev.FNext := N;
@@ -772,26 +681,26 @@ begin
       Inc(FCount);
       Result := N;
     end;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.Posn(P : TStListNode) : Integer;
+function TStList<TData,TNode>.Posn(P : TStListNode<TData>) : Integer;
 var
   I : Integer;
-  N : TStListNode;
+  N : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     if not Assigned(P) then
       Result := -1
     else begin
-      if not (P is conNodeClass) then
+      if not (P is TNode) then
         RaiseContainerError(stscBadType);
       I := 0;
       N := FHead;
@@ -805,39 +714,39 @@ begin
       end;
       Result := -1;
     end;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.Prev(P : TStListNode) : TStListNode;
+function TStList<TData,TNode>.Prev(P : TStListNode<TData>) : TStListNode<TData>;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     Result := P.FPrev;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-procedure TStList.Sort;
+procedure TStList<TData,TNode>.Sort;
 const
   StackSize = 32;
 type
-  Stack = array[0..StackSize-1] of TStListNode;
+  Stack = array[0..StackSize-1] of TStListNode<TData>;
 var
-  L : TStListNode;
-  R : TStListNode;
-  PL : TStListNode;
-  PR : TStListNode;
-  PivotData : Pointer;
-  TmpData : Pointer;
+  L : TStListNode<TData>;
+  R : TStListNode<TData>;
+  PL : TStListNode<TData>;
+  PR : TStListNode<TData>;
+  PivotData : TData;
+  TmpData : TData;
   Dist : Integer;
   DistL : Integer;
   DistR : Integer;
@@ -846,10 +755,10 @@ var
   RStack : Stack;
   DStack : array[0..StackSize-1] of Integer;
 begin
-{$IFDEF ThreadSafe}
+
   EnterCS;
   try
-{$ENDIF}
+
     {Need at least 2 elements to sort}
     if Count <= 1 then
       Exit;
@@ -942,102 +851,24 @@ begin
 
         until Dist <= 0;
     until StackP < 0;
-{$IFDEF ThreadSafe}
+
   finally
     LeaveCS;
   end;
-{$ENDIF}
+
 end;
 
-function TStList.Split(P : TStListNode) : TStList;
-var
-  I : Integer;
+
+
+function TStList<TData,TNode>.DoCompare(Data1, Data2 : TData) : Integer;
 begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    I := Posn(P);
-    if I < 0 then begin
-      Result := nil;
-      Exit;
-    end;
-
-    {Create and initialize the new list}
-    Result := TStListClass(ClassType).Create(conNodeClass);
-    Result.Compare := Compare;
-    Result.OnCompare := OnCompare;
-    Result.DisposeData := DisposeData;
-    Result.OnDisposeData := OnDisposeData;
-    Result.LoadData := LoadData;
-    Result.OnLoadData := OnLoadData;
-    Result.StoreData := StoreData;
-    Result.OnStoreData := OnStoreData;
-    Result.FHead := P;
-    Result.FTail := FTail;
-    Result.FCount := Count-I;
-    Result.lsLastI := -1;
-
-    {Truncate the old list}
-    if Assigned(P.FPrev) then begin
-      P.FPrev.FNext := nil;
-      FTail := P.FPrev;
-      P.FPrev := nil;
-    end;
-    if P = FHead then
-      FHead := nil;
-    FCount := I;
-    lsLastI := -1;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
+  Result := 0;
+  if Assigned(FOnCompare) then
+    FOnCompare(Self, Data1, Data2, Result)
+  else if Assigned(FCompare) then
+    Result := FCompare(Data1, Data2);
 end;
 
-function TStList.StoresPointers : Boolean;
-begin
-  Result := true;
-end;
-
-procedure TStList.StoreToStream(S : TStream);
-var
-  Writer : TWriter;
-  Walker : TStListNode;
-begin
-{$IFDEF ThreadSafe}
-  EnterCS;
-  try
-{$ENDIF}
-    Writer := TWriter.Create(S, 1024);
-    try
-      with Writer do
-        begin
-          WriteString(Self.ClassName);
-          WriteString(conNodeClass.ClassName);
-          WriteListBegin;
-          Walker := Head;
-          while Walker <> nil do
-            begin
-              DoStoreData(Writer, Walker.Data);
-              Walker := Next(Walker);
-            end;
-          WriteListEnd;
-        end;
-    finally
-      Writer.Free;
-    end;
-{$IFDEF ThreadSafe}
-  finally
-    LeaveCS;
-  end;
-{$ENDIF}
-end;
-
-{$IFDEF ThreadSafe}
-initialization
-  Windows.InitializeCriticalSection(ClassCritSect);
-finalization
-  Windows.DeleteCriticalSection(ClassCritSect);
-{$ENDIF}
 end.
+
+
