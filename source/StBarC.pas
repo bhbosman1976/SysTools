@@ -1,5 +1,4 @@
 // Upgraded to Delphi 2009: Sebastian Zierer
-
 (* ***** BEGIN LICENSE BLOCK *****
  * Version: MPL 1.1
  *
@@ -23,6 +22,8 @@
  *
  * Contributor(s):
  *
+ * This rework is by Michael Geddes (at Striven) (c) 2025..2026
+ *
  * ***** END LICENSE BLOCK ***** *)
 
 {*********************************************************}
@@ -38,110 +39,292 @@ unit StBarC;
 interface
 
 uses
-  Windows,
-  Classes, ClipBrd, Controls, Graphics, Messages, SysUtils,
-  StBase, StConst;
+  System.Classes,
+  System.SysUtils,
+  System.UITypes,
+  System.Types;
 
+// STBase ------
+type
+  EStException = class(Exception)     {ancestor to all SysTools exceptions}
+    protected {private}
+      FErrorCode : Longint;
+    public
+      constructor CreateResTP(Ident : LongInt; Dummy : Word);
+      constructor CreateResFmtTP(Ident : Longint; const Args : array of const;
+                                 Dummy : Word);
+      property ErrorCode : LongInt
+        read FErrorCode
+        write FErrorCode;
+  end;
+  EStExceptionClass = class of EStException;
+  EStBarCodeError = class(EStException);     {BarCode exception}
+
+  {: Simple stack-based record based array container.
+    Designed to easily add/remove without a whole heap of
+    extra functionality.
+  }
+  TArrayOf<T> = record
+  public
+  type
+    TArrType = TArray<T>;
+    PArray = ^TArrType;
+  private
+    FArray : TArrType;
+    FCount : integer;
+
+    procedure Grow(ANewCount : integer);
+    function GetValue(AIdx : Integer): T;
+    procedure SetValue(AIdx : Integer; const NewVal: T);
+    const _GrowNumber = 10;
+  public
+    constructor Create(ACap : integer);
+    class operator Initialize(out AArray : TArrayOf<T>);
+
+    function Append(const AVal : T) : integer; overload;
+    function Append(const AArr : TArrayOf<T>) : integer; overload;
+
+    function Add(const AVal : T) : integer; inline;
+
+    function AsArray : TArray<T>;
+    property Value[AIdx : Integer] : T read GetValue write SetValue; default;
+    property Count : integer read FCount;
+
+    procedure Clear;
+
+    procedure Delete(AIdx : integer);
+
+  type
+    TEnumerator = record
+    private
+      FPArray: PArray;
+      FPCount : PInteger;
+      FIndex: Integer;
+      function DoGetCurrent: T;
+      constructor Create(AArray : PArray; ACount : PInteger);
+    public
+      property Current: T read DoGetCurrent;
+      function MoveNext: Boolean;
+    end;
+
+    function GetEnumerator: TEnumerator;
+  end;
+
+
+// -------------
+
+// StConst -----
 const
-  {.Z+}
-  bcMaxBarCodeLen = 255;
-  bcGuardBarAbove = True;
-  bcGuardBarBelow = True;
-  bcDefNarrowToWideRatio = 2;
-  {.Z-}
+  {barcode errors}
+  stscInvalidUPCACodeLen    = 140;
+  stscInvalidCharacter      = 141;
+  stscInvalidCheckCharacter = 142;
+  stscInvalidUPCECodeLen    = 143;
+  stscInvalidEAN8CodeLen    = 144;
+  stscInvalidEAN13CodeLen   = 145;
+  stscInvalidSupCodeLen     = 146;
+resourcestring
+  stscInvalidUPCACodeLenS        = 'Invalid code length (must be 11 or 12)';
+  stscInvalidCharacterS          = 'Invalid character';
+  stscInvalidCheckCharacterS     = 'Invalid check character';
+  stscInvalidUPCECodeLenS        = 'Invalid code length (must be 6, 7 or 8)';
+  stscInvalidEAN8CodeLenS        = 'Invalid code length (must be 7 or 8)';
+  stscInvalidEAN13CodeLenS       = 'Invalid code length (must be 12 or 13)';
+  stscInvalidSupCodeLenS         = 'Invalid supplemental code length (must be 2 or 5)';
+type
+  StStrRec = record
+    ID: Integer;
+    Str: string;
+  end;
+const
+  SysToolsStrArray : array [0..6] of StStrRec = (
+  {barcode errors}
+ (ID: stscInvalidUPCACodeLen; Str: stscInvalidUPCACodeLenS),
+ (ID: stscInvalidCharacter; Str: stscInvalidCharacterS),
+ (ID: stscInvalidCheckCharacter; Str: stscInvalidCheckCharacterS),
+ (ID: stscInvalidUPCECodeLen; Str: stscInvalidUPCECodeLenS),
+ (ID: stscInvalidEAN8CodeLen; Str: stscInvalidEAN8CodeLenS),
+ (ID: stscInvalidEAN13CodeLen; Str: stscInvalidEAN13CodeLenS),
+ (ID: stscInvalidSupCodeLen; Str: stscInvalidSupCodeLenS)
+ );
+// -------------
 
+
+// Files
 type
   TStBarKind = (bkSpace, bkBar, bkThreeQuarterBar, bkHalfBar, bkGuard, bkSupplement, bkBlankSpace);
-  {.Z+}
   TStBarKindSet = set of TStBarKind;
-  TStDigitArray = array[1..bcMaxBarCodeLen] of Byte;
-  {.Z-}
-
-  {.Z+}
-  TStBarData = class
-    FKind    : TStBarKindSet;
-    FModules : Integer;
-  public
-    property Kind : TStBarKindSet
-      read FKind
-      write FKind;
-    property Modules : Integer
-      read FModules
-      write FModules;
-  end;
-  {.Z-}
-
-  {.Z+}
-  TStBarCodeInfo = class
+  TStDigitArray = record
   private
-    FBars       : TList;
+    FBytes : TArrayOf<Byte>;
+    function rItem(AIdx : integer): Byte;
+    procedure wItem(AIdx : integer; NewVal: Byte);
+  public
+    property Item[AIdx : integer] : Byte read rItem write wItem; default;
+  end;
+
+
+  TStBarData = record
+  public
+    Kind    : TStBarKindSet;
+    Modules : Integer;
+  end;
+
+{$SCOPEDENUMS ON}
+  TStTextSize = ( Small, Normal);
+{$SCOPEDENUMS OFF}
+  TStTextData = record
+    Text : String;
+    BarIdx : integer;
+    Size : TStTextSize;
+  end;
+
+  TStBarCodeInfo = record
+  private
+    FBars       : TArrayOf<TStBarData>;
+    FText       : TArrayOf<TStTextData>;
 
     function GetBars(Index : Integer) : TStBarData;
     function GetCount : Integer;
+    function GetTextData(Index : integer): TStTextData;
+    function GetTextItemCount: integer;
 
   public
-    constructor Create;
-      virtual;
-    destructor Destroy;
-      override;
+
     procedure Add(ModuleCount : Integer; BarKind : TStBarKindSet);
+    procedure AddText(AText : String;ASize : TStTextSize = TStTextSize.Normal);
+    procedure AddDigit(ADigit : word;ASize : TStTextSize = TStTextSize.Normal);
     procedure Clear;
 
-    property Bars[Index : Integer] : TStBarData
-      read GetBars;
-      default;
+    property Bars[Index : Integer] : TStBarData read GetBars; default;
 
-    property Count : Integer
-      read GetCount;
+    property Count : Integer read GetCount;
+
+    property TextItems[Index : integer] : TStTextData read GetTextData;
+    property TextItemCount : integer read GetTextItemCount;
   end;
-  {.Z-}
 
-  TStBarCodeType = (bcUPC_A, bcUPC_E, bcEAN_8, bcEAN_13,
-                    bcInterleaved2of5, bcCodabar, bcCode11,
-                    bcCode39, bcCode93, bcCode128);
-  TStCode128CodeSubset = (csCodeA, csCodeB, csCodeC);
+  {$SCOPEDENUMS ON}
+  TStBarCodeType = (UPC_A, UPC_E, EAN_8, EAN_13,
+                    Interleaved2of5, Codabar, Code11,
+                    Code39, Code93, Code128, Code128C, Code128A, Code128B);
+  TStBarCodeTypes = set of TStBarCodeType;
 
-  TStBarCode = class(TGraphicControl)
-  protected {private}
+  TStBarCodeTypeHelper = record helper for TStBarCodeType
+  public
+    type
+      TDesc = record
+        C, N : String;
+      end;
+    const
+      _desc : Array[TStBarCodeType] of TDesc = (
+        (C:'UPCA'; N: 'UPC-A';),
+        (C:'UPCE'; N: 'UPC-E';),
+        (C:'EAN8'; N: 'EAN-8';),
+        (C:'EAN13';N: 'EAN-13';),
+        (C:'I25';  N: 'interleaved 2 of 5';),
+        (C:'CBR';  N: 'codabar';),
+        (C:'11';  N: 'code 11';),
+        (C:'39';  N: 'code 39';),
+        (C:'93';  N: 'code 93';),
+        (C:'128';  N: 'Code 128';),
+        (C:'128C';  N: 'Code 128-C';),
+        (C:'128A';  N: 'Code 128-A';),
+        (C:'128B';  N: 'Code 128-B';)
+        );
+    function AsCode : String;
+    function AsDesc : String;
+
+    class function AsEnumFromCode(const ACode : String; var AVal : TStBarCodeType) : boolean; static;
+    class function AsEnumFromDesc(const ACode : String; var AVal : TStBarCodeType) : boolean; static;
+  end;
+  TStAutoSelect = (WithoutCheck, WithCheck, Both);
+
+  TStCheckResult = (None, Match, Added, Mismatch, Invalid);
+  {$SCOPEDENUMS OFF}
+
+
+  // Compat with old.
+  TBarCodeType = (
+    bcAny,     { choose best-fit }
+    bcEAN,
+    bcUPC,        { upc = 12-digit ean }
+    bcISBN,       { isbn numbers (still EAN13) }
+    bc39,         { code 39 }
+    bc128,        { code 128 (a,b,c: autoselection) }
+    bc128C,       { code 128 (compact form for digits) }
+    bc128B,       { code 128, full printable ascii }
+    bcI25,        { interleaved 2 of 5 (only digits) }
+    bcCBR,        { Codabar  }
+    bc93,         { code 93  }
+    bcEANCS,
+    bcUPCCS,
+    bcISBNCS,
+    bcCBRCS,
+    bcWithChecksum
+  );
+  TBarCodeTypes = set of TBarCodeType;
+
+
+  // Canvas - output in mm.
+  TStBarcodeCanvas  = class
+  public
+    // procedure SetPenWidth( width: Double); virtual; abstract;
+    procedure DrawLine( X0, Y0, X1, Y1 : Double); virtual; abstract;
+    procedure SetFontSize( Size : Double); virtual; abstract;
+    procedure TextOut( X, Y : Double ; txt : string ); virtual; abstract;
+    function GetTextExtents(AText : String) : TPointF; virtual; abstract;
+  end;
+
+  TStBarcode = class
+  protected
+  const
+    bcMaxBarCodeLen = 255;
+    bcGuardBarAbove = False;
+    bcGuardBarBelow = True;
+    bcDefNarrowToWideRatio = 2;
+    _MMPerInch = 25.4;
+    _PointPerMM = 0.352778;
+
+    _Code128 : TStBarCodeTypes = [TStBarcodeType.Code128, TStBarcodeType.Code128A, TStBarcodeType.Code128B, TStBarcodeType.Code128C];
+    _FontSizeMM : array[TStTextSize] of double = ( 2.7, 3.5);
+
+  var
     {property variables}
-    {.Z+}
     FAddCheckChar     : Boolean;
     FBarCodeType      : TStBarCodeType;
-    FBarColor         : TColor;
     FBarToSpaceRatio  : Double;
     FBarNarrowToWideRatio : Integer;
     FBarWidth         : Double;         {in mils}
-    FCode128Subset    : TStCode128CodeSubset;
     FBearerBars       : Boolean;
     FShowCode         : Boolean;
     FShowGuardChars   : Boolean;
     FSupplementalCode : string;
     FTallGuardBars    : Boolean;
     FExtendedSyntax   : Boolean;
+    FText : string;
 
     {internal variables}
     bcBarInfo        : TStBarCodeInfo;
-    bcBarModWidth    : Integer; {width of single bar}
+    bcBarModWidth    : double; {width of single bar}
     bcCheckK         : Integer; {"K" check character for use by Code11}
     bcDigits         : TStDigitArray;
     bcDigitCount     : Integer;
-    bcSpaceModWidth  : Integer; {width of empty space between bars}
-    bcNormalWidth    : Integer;
-    bcSpaceWidth     : Integer;
-    bcSupplementWidth: Integer;
+    bcSpaceModWidth  : Double; {width of empty space between bars}
+    bcNormalWidth    : double;
+    bcSpaceWidth     : double;
+    bcSupplementWidth: double;
+    bcDirty          : boolean;
 
     {property methods}
     function GetCode : string;
-    function GetVersion : string;
     procedure SetAddCheckChar(Value : Boolean);
     procedure SetBarCodeType(Value : TStBarCodeType);
-    procedure SetBarColor(Value : TColor);
     procedure SetBarToSpaceRatio(Value : Double);
     procedure SetBarNarrowToWideRatio(Value: Integer);
     procedure SetBarWidth(Value : Double);
     procedure SetBearerBars(Value : Boolean);
     procedure SetCode(const Value : string);
-    procedure SetCode128Subset(Value : TStCode128CodeSubset);
     procedure SetExtendedSyntax (const v : Boolean);
     procedure SetShowCode(Value : Boolean);
     procedure SetShowGuardChars(Value : Boolean);
@@ -152,128 +335,101 @@ type
     {internal methods}
     procedure CalcBarCode;
     procedure CalcBarCodeWidth;
-    function DrawBar(XPos, YPos, AWidth, AHeight : Integer) : Integer;
-    procedure DrawBarCode(const R : TRect);
-    function GetDigits(Characters : string) : Integer;
-    procedure PaintPrim(const R : TRect);
-    function SmallestLineWidth(PixelsPerInch : Integer) : Double;
-
-    {VCL message methods}
-    procedure CMTextChanged(var Msg : TMessage);
-      message CM_TEXTCHANGED;
-
+    procedure IncrementBarPosn( const AData : TStBarData; var normalWidth, spaceWidth, supplementWidth : double);
+    // procedure DrawBarCode(const R : TRect);
+    function GetDigits(Characters : string) : Integer; overload;
+    function GetDigits(AType : TStBarCodeType; Characters : string; var ADigits : TStDigitArray) : Integer; overload;
+    class function GetDigits(AType : TStBarCodeType; Characters : string; AExtendedSyntax : boolean; var ADigits : TStDigitArray) : Integer; overload; static;
+    function SmallestLineWidth: Double;
+    class function DoGetCheckCharacters(AType : TStBarCodeType; const ADigits : TStDigitArray; ALen : integer; var C, K : integer) : TStCheckResult; static;
+  {$SCOPEDENUMS ON}
+    type
+      TEanMode = (Standard, Complement);
+  {$SCOPEDENUMS OFF}
+    class function EANChecksum(const ADigits : TStDigitArray; ALen : Integer; AMode : TEanMode) : integer; static;
   protected
-   procedure Loaded;
-     override;
-    procedure Paint;
-      override;
+    procedure Invalidate;
   public
-    constructor Create(AOwner : TComponent);
-      override;
-    destructor Destroy;
-      override;
-    {.Z-}
+    constructor Create(AText : String);
+    procedure AfterConstruction; override;
 
-    procedure CopyToClipboard;
-    procedure GetCheckCharacters(const S : string; var C, K : Integer);
-    function GetBarCodeWidth(ACanvas : TCanvas) : Double;
-    procedure PaintToCanvas(ACanvas : TCanvas; ARect : TRect);
-    procedure PaintToCanvasSize(ACanvas : TCanvas; X, Y, H : Double);
-    procedure PaintToDC(DC : hDC; ARect : TRect);
-    procedure PaintToDCSize(DC : hDC; X, Y, W, H : Double);
-    procedure SaveToFile(const FileName : string);
+    function GetCheckCharacters(const S : string; var C, K : Integer) : TStCheckResult; overload;
+    function GetCheckCharacters(AType : TStBarCodeType; const S : string; var C, K : Integer) : TStCheckResult; overload;
+    class function GetCheckCharacters(AType : TStBarCodeType; const S : string; var C, K : Integer; AExtendedSyntax : boolean = false) : TStCheckResult; overload; static;
+    function GetCheckCharacters(var C, K : Integer) : TStCheckResult; overload;
+
+    class function ValidateCheckDigits(AType : TStBarCodeType; AExtSyntax : boolean; Const ABarcode : String) : boolean; static;
+    function GetBarCodeWidth(AScale : Double = 1) : Double; overload;
+    function GetBarCodeWidth(var ACanCompress : boolean; AScale : Double = 1) : Double; overload;
     function Validate(DisplayError : Boolean) : Boolean;
 
-  published
+    procedure DrawBarCode(ACanvas : TStBarcodeCanvas; const R : TRectF; AScale : Double = 1;ACenter : boolean = true);
+
+    function SelectBarcodeType(AType : TStBarCodeTypes; ACSMode: TStAutoSelect) : boolean; overload;
+
+    function SelectBarcodeType( ATypes :  TBarCodeTypes) : boolean; overload;
+
+  public
     {properties}
-    property Align;
-    property Color;
-    property Cursor;
-    property Enabled;
-    property Font;
-    property ParentColor;
-    property ParentFont;
-    property ParentShowHint;
-    property ShowHint;
-    property Visible;
 
-    property AddCheckChar : Boolean
-      read FAddCheckChar
-      write SetAddCheckChar;
+    property AddCheckChar : Boolean read FAddCheckChar write SetAddCheckChar;
 
-    property BarCodeType : TStBarCodeType
-      read FBarCodeType
-      write SetBarCodeType;
+    property BarCodeType : TStBarCodeType read FBarCodeType write SetBarCodeType;
 
-    property BarColor : TColor
-      read FBarColor
-      write SetBarColor;
+    property BarToSpaceRatio : Double read FBarToSpaceRatio write SetBarToSpaceRatio;
 
-    property BarToSpaceRatio : Double
-      read FBarToSpaceRatio
-      write SetBarToSpaceRatio;
+    property BarNarrowToWideRatio : Integer read FBarNarrowToWideRatio write SetBarNarrowToWideRatio default bcDefNarrowToWideRatio;
 
-    property BarNarrowToWideRatio : Integer
-      read FBarNarrowToWideRatio
-      write SetBarNarrowToWideRatio
-      default bcDefNarrowToWideRatio;
+    //: The width of a barcode line element.
+    property BarWidth : Double read FBarWidth write SetBarWidth;
 
-    property BarWidth : Double
-      read FBarWidth
-      write SetBarWidth;
+    property BearerBars : Boolean read FBearerBars write SetBearerBars;
 
-    property BearerBars : Boolean
-      read FBearerBars
-      write SetBearerBars;
+    property Code : string read GetCode write SetCode;
 
-    property Code : string
-      read GetCode
-      write SetCode;
+    property ExtendedSyntax : Boolean read FExtendedSyntax write SetExtendedSyntax default False;
 
-    property Code128Subset : TStCode128CodeSubset
-      read FCode128Subset
-      write SetCode128Subset;
+    property ShowCode : Boolean read FShowCode write SetShowCode;
 
-    property ExtendedSyntax : Boolean
-             read FExtendedSyntax write SetExtendedSyntax
-             default False;
+    property ShowGuardChars : Boolean read FShowGuardChars write SetShowGuardChars;
 
-    property ShowCode : Boolean
-      read FShowCode
-      write SetShowCode;
+    property SupplementalCode : string read FSupplementalCode write SetSupplementalCode;
 
-    property ShowGuardChars : Boolean
-      read FShowGuardChars
-      write SetShowGuardChars;
+    property TallGuardBars : Boolean read FTallGuardBars write SetTallGuardBars;
 
-    property SupplementalCode : string
-      read FSupplementalCode
-      write SetSupplementalCode;
-
-    property TallGuardBars : Boolean
-      read FTallGuardBars
-      write SetTallGuardBars;
-
-    property Version : string
-      read GetVersion
-      write SetVersion
-      stored False;
-
-    {events}
-    property OnClick;
-    property OnDblClick;
-    property OnMouseDown;
-    property OnMouseMove;
-    property OnMouseUp;
   end;
 
-
 implementation
-{$IFDEF FPC}
-  uses mymetafile
-  , graphics_delphi
-  ;
-{$ENDIF}
+
+uses
+  System.Math;
+
+// StBase ------
+procedure RaiseStError(ExceptionClass : EStExceptionClass; Code : LongInt);
+var
+  E : EStException;
+begin
+  E := ExceptionClass.CreateResTP(Code, 0);
+  E.ErrorCode := Code;
+  raise E;
+end;
+function SysToolsStr(Index : Integer) : string;
+var
+  i : Integer;
+begin
+  for i := Low(SysToolsStrArray) to High(SysToolsStrArray) do
+    if SysToolsStrArray[i].ID = Index then
+      Result := SysToolsStrArray[i].Str;
+end;
+constructor EStException.CreateResTP(Ident : LongInt; Dummy : Word);
+begin
+  inherited Create(SysToolsStr(Ident));
+end;
+constructor EStException.CreateResFmtTP(Ident : Longint; const Args : array of const; Dummy : Word);
+begin
+  inherited CreateFmt(SysToolsStr(Ident), Args);
+end;
+// -------------
 
 const
   {left and right codes for UPC_A}
@@ -745,6 +901,27 @@ const
      '211232',  {105	CODE C}                  {use #138}
      '2331112');{106    STOP}                    {use #139}
 
+  CUPCE_Mirror0 : array[0..9] of string = (
+    'EEEOOO', 'EEOEOO', 'EEOOEO', 'EEOOOE', 'EOEEOO',
+    'EOOEEO', 'EOOOEE', 'EOEOEO', 'EOEOOE', 'EOOEOE'
+  );
+  CUPCE_Mirror1 : array[0..9] of string = (
+    'OOOEEE', 'OOEOEE', 'OOEEOE', 'OOEEEO', 'OEOOEE',
+    'OEEOOE', 'OEEEOO', 'OEOEOE', 'OEOEEO', 'OEEOEO'
+  );
+  CEAN_Handedness : array[0..9] of string = (
+    {EAN refers to this as the 13th digit - counting from the right}
+    'AAAAAA', 'AABABB', 'AABBAB', 'AABBBA', 'ABAABB',
+    'ABBAAB', 'ABBBAA', 'ABABAB', 'ABABBA', 'ABBABA'
+  );
+  CEAN_SupCodeParitySmall: array[0..3] of string = (
+    'OO', 'OE', 'EO', 'EE'
+  );
+
+  CEAN_SupCodeParity : array[0..9] of string = (
+   'EEOOO', 'EOEOO', 'EOOEO', 'EOOOE', 'OEEOO',
+   'OOEEO', 'OOOEE', 'OEOEO', 'OEOOE', 'OOEOE'
+  );
 
 {*** helper routines ***}
 
@@ -758,6 +935,22 @@ begin
   Result := R.Bottom-R.Top;
 end;
 
+function TStDigitArray.rItem(AIdx : integer): Byte;
+begin
+  if AIdx > FBytes.Count then
+    result := 0
+  else
+    result := FBytes[AIdx-1];
+end;
+
+procedure TStDigitArray.wItem(AIdx : integer; NewVal: Byte);
+begin
+  Dec(AIdx);
+  while AIdx >= FBytes.Count do
+    FBytes.Add(0);
+  FBytes[AIdx] := newVal;
+end;
+
 
 {*** TStBarCodeInfo ***}
 
@@ -765,35 +958,30 @@ procedure TStBarCodeInfo.Add(ModuleCount : Integer; BarKind : TStBarKindSet);
 var
   Bar : TStBarData;
 begin
-  Bar := TStBarData.Create;
   Bar.Modules := ModuleCount;
   Bar.Kind := BarKind;
   FBars.Add(Bar);
 end;
 
-procedure TStBarCodeInfo.Clear;
+procedure TStBarCodeInfo.AddText(AText : String;ASize : TStTextSize = TStTextSize.Normal);
 var
-  I : Integer;
+  txt : TStTextData;
 begin
-  for I := 0 to FBars.Count-1 do
-    TStBarData(FBars[I]).Free;
+  txt.Text := AText;
+  txt.BarIdx := FBars.Count;
+  txt.Size := ASize;
+  FText.Add(txt);
+end;
+
+procedure TStBarCodeInfo.AddDigit(ADigit : word;ASize : TStTextSize = TStTextSize.Normal);
+begin
+  AddText(char(ord('0')+ADigit), ASize);
+end;
+
+procedure TStBarCodeInfo.Clear;
+begin
   FBars.Clear;
-end;
-
-constructor TStBarCodeInfo.Create;
-begin
-  inherited Create;
-
-  FBars := TList.Create;
-end;
-
-destructor TStBarCodeInfo.Destroy;
-begin
-  Clear;
-  FBars.Free;
-  FBars := nil;
-
-  inherited Destroy;
+  FText.Clear;
 end;
 
 function TStBarCodeInfo.GetBars(Index : Integer) : TStBarData;
@@ -806,10 +994,30 @@ begin
   Result := FBars.Count;
 end;
 
+function TStBarCodeInfo.GetTextData(Index : integer): TStTextData;
+begin
+  result := FText[Index];
+end;
 
-{*** TStBarCode ***}
+function TStBarCodeInfo.GetTextItemCount: integer;
+begin
+  result := FText.Count;
+end;
 
-procedure TStBarCode.CalcBarCode;
+function ChToInt(AChar : Char) : Integer; inline;
+begin
+  result := Ord(AChar) - ord('0');
+  if (result < 0) or (result > 9) then
+    raise EConvertError.CreateFmt('''%s'' is not a valid integer', [AChar]);
+end;
+function ChMatches(AChar : Char; AVal : integer) : boolean; inline;
+begin
+  result := (Ord(AChar) - ord('0')) = AVal;
+end;
+
+{*** TStBarcode ***}
+
+procedure TStBarcode.CalcBarCode;
 var
   I, J, X : Integer;
   CheckC  : Integer;
@@ -826,18 +1034,22 @@ var
       if S[I] = '0' then
         bcBarInfo.Add(1, AKind - [bkBar, bkThreeQuarterBar, bkHalfBar] + [bkSpace])
       else
-        bcBarInfo.Add(StrToInt(S[I]), AKind);
+        bcBarInfo.Add(ChToInt(S[I]), AKind);
   end;
 
   procedure AddECode(const Parity : string);
   var
     I : Integer;
   begin
-    for I := 1 to Length(Parity) do begin
+    for I := 1 to Length(Parity) do
+    begin
+      var digit := bcDigits[I+1];
+      if FShowCode then
+        bcBarInfo.AddDigit(digit);
       if Parity[I] = 'E' then
-        AddCode(UPC_E_EvenParity[bcDigits[I]], [bkBar])
+        AddCode(UPC_E_EvenParity[digit], [bkBar])
       else
-        AddCode(UPC_E_OddParity[bcDigits[I]], [bkBar]);
+        AddCode(UPC_E_OddParity[digit], [bkBar]);
     end;
   end;
 
@@ -845,7 +1057,8 @@ var
   var
     I : Integer;
   begin
-    for I := 1 to Length(Parity) do begin
+    for I := 1 to Length(Parity) do
+    begin
       if Parity[I] = 'E' then
         AddCode(UPC_E_EvenParity[bcDigits[I]], [bkThreeQuarterBar, bkSupplement])
       else
@@ -859,11 +1072,12 @@ var
   var
     K : Integer;
   begin
-    for K := 1 to Length(S) do begin
+    for K := 1 to Length(S) do
+    begin
       if Odd(K) then
-        bcBarInfo.Add(StrToInt(S[K]), [bkBar])
+        bcBarInfo.Add(ChToInt(S[K]), [bkBar])
       else
-        bcBarInfo.Add(StrToInt(S[K]), [bkSpace]);
+        bcBarInfo.Add(ChToInt(S[K]), [bkSpace]);
     end;
   end;
 
@@ -871,7 +1085,8 @@ var
   var
     K : Integer;
   begin
-    for K := 1 to Length(S) do begin
+    for K := 1 to Length(S) do
+    begin
       case S[K] of
         '0' : if Odd(K) then
                 bcBarInfo.Add(1, [bkBar])
@@ -885,9 +1100,12 @@ var
     end;
   end;
 
+const
+  _TextSpace = 8;
 begin
-  if csLoading in ComponentState then
-    Exit;
+
+  if FBarcodeType = TStBarcodeType.Code128 then
+    SelectBarcodeType([TStBarcodeType.Code128], TStAutoSelect.WithoutCheck);
 
   bcBarInfo.Clear;
   if Code = '' then
@@ -898,23 +1116,25 @@ begin
 
   {get digits}
   case FBarCodeType of
-    bcUPC_A, bcUPC_E, bcEAN_8, bcEAN_13, bcCodabar, bcCode11, bcCode93 :
+    TStBarcodeType.UPC_A, TStBarcodeType.UPC_E,
+    TStBarcodeType.EAN_8, TStBarcodeType.EAN_13,
+    TStBarcodeType.Codabar, TStBarcodeType.Code11, TStBarcodeType.Code93:
       begin
         bcDigitCount := GetDigits(C);
       end;
-    bcInterleaved2of5 :
+    TStBarcodeType.Interleaved2of5 :
       begin
         {adjust odd length code}
-        if FAddCheckChar then begin
+        if FAddCheckChar then
+        begin
           if not Odd(Length(C)) then
             C := '0' + C;
-        end else begin
-          if Odd(Length(C)) then
+        end
+        else if Odd(Length(C)) then
           C := '0' + C;
-        end;
         bcDigitCount := GetDigits(C);
       end;
-    bcCode39 :
+    TStBarcodeType.Code39 :
       begin
         {add guard characters}
         if C[1] <> '*' then
@@ -923,21 +1143,28 @@ begin
           C := C + '*';
         bcDigitCount := GetDigits(C);
       end;
-    bcCode128 :
+    TStBarcodeType.Code128A,
+    TStBarcodeType.Code128B,
+    TStBarcodeType.Code128C,
+    TStBarcodeType.Code128 :
       begin
         {add start code}
-        if not CharInSet(C[1], [#136, #137, #138]) then
-          case FCode128Subset of
-            csCodeA : C := #136 + C;
-            csCodeB : C := #137 + C;
-            csCodeC : C := #138 + C;
+        case C[1] of
+          #136, #137, #138: ;
+        else
+          case FBarcodeType of
+          TStBarcodeType.Code128,
+          TStBarcodeType.Code128A: C := #136 + C;
+          TStBarcodeType.Code128B: C := #137 + C;
+          TStBarcodeType.Code128C: C := #138 + C;
           end;
+        end;
         bcDigitCount := GetDigits(C);
       end;
   end;
 
   case FBarCodeType of
-    bcUPC_A :
+    TStBarcodeType.UPC_A :
       begin
         {get check digit}
         if Length(C) = 11 then
@@ -945,47 +1172,70 @@ begin
         else
           CheckC := bcDigits[12];
 
+        if FShowCode then
+        begin
+          bcBarInfo.AddDigit(bcDigits[1], TStTextSize.Small);
+          bcBarInfo.Add(_TextSpace,[bkSpace,bkBlankSpace]);
+        end;
         {encode left hand guard bars}
         AddCode('101', [bkGuard, bkBar]);
 
         {first six characters as left hand characters}
-        for I := 1 to 6 do
+        AddCode(UPC_A_LeftHand[bcDigits[1]], [bkBar, bkGuard]);
+        for I := 2 to 6 do
+        begin
+          if FShowCode then
+            bcBarInfo.AddDigit(bcDigits[I]);
           AddCode(UPC_A_LeftHand[bcDigits[I]], [bkBar]);
+        end;
 
         {center guard pattern}
         AddCode('01010', [bkGuard, bkBar]);
 
         {last five data characters as right hand characters}
         for I := 7 to 11 do
+        begin
+          if FShowCode then
+            bcBarInfo.AddDigit(bcDigits[I]);
           AddCode(UPC_A_RightHand[bcDigits[I]], [bkBar]);
+        end;
 
         {check character}
         AddCode(UPC_A_RightHand[CheckC], [bkBar]);
 
         {encode right hand guard bars}
         AddCode('101', [bkGuard, bkBar]);
+        if FShowCode then
+        begin
+          bcBarInfo.AddDigit(CheckC, TStTextSize.Small);
+          bcBarInfo.Add(_TextSpace,[bkSpace,bkBlankSpace]);
+        end;
       end;
-    bcUPC_E :
+    TStBarcodeType.UPC_E :
       begin
         {encode left hand guard bars, 101}
+        if FShowCode then
+        begin
+          bcBarInfo.AddDigit(bcDigits[1], TStTextSize.Small);
+          bcBarInfo.Add(_TextSpace,[bkSpace,bkBlankSpace]);
+        end;
         AddCode('101', [bkGuard, bkBar]);
         GetCheckCharacters(C, CheckC, CheckK);
-        case CheckC of
-          0 : AddECode('EEEOOO');
-          1 : AddECode('EEOEOO');
-          2 : AddECode('EEOOEO');
-          3 : AddECode('EEOOOE');
-          4 : AddECode('EOEEOO');
-          5 : AddECode('EOOEEO');
-          6 : AddECode('EOOOEE');
-          7 : AddECode('EOEOEO');
-          8 : AddECode('EOEOOE');
-          9 : AddECode('EOOEOE');
-        end;
+
+        if bcDigits[1] = 0 then
+          AddECode(CUPCE_Mirror0[CheckC])
+        else
+          AddECode(CUPCE_Mirror1[CheckC]);
+
         {encode right hand guard bars}
         AddCode('010101', [bkGuard, bkBar]);
+        if FShowCode then
+        begin
+          bcBarInfo.AddDigit(CheckC);
+          bcBarInfo.Add(_TextSpace,[bkSpace,bkBlankSpace]);
+        end;
       end;
-    bcEAN_8   :
+    TStBarcodeType.EAN_8   :
       begin
         {get check digit}
         if Length(C) = 7 then
@@ -997,18 +1247,28 @@ begin
         AddCode('101', [bkGuard, bkBar]);
         {two flag two data characters, encoded as left hand A characters}
         for I := 1 to 4 do
+        begin
+          if FShowCode then
+            bcBarInfo.AddDigit(bcDigits[I]);
           AddCode(EAN_LeftHandA[bcDigits[I]], [bkBar]);
+        end;
         {encode center guard bars}
         AddCode('01010', [bkGuard, bkBar]);
         {last three data characters, encoded as right hand characters}
         for I := 5 to 7 do
+        begin
+          if FShowCode then
+            bcBarInfo.AddDigit(bcDigits[I]);
           AddCode(UPC_A_RightHand[bcDigits[I]], [bkBar]);
+        end;
         {check character}
+        if FShowCode then
+          bcBarInfo.AddDigit(CheckC, TStTextSize.Small);
         AddCode(UPC_A_RightHand[CheckC], [bkBar]);
         {encode right hand guard bars}
         AddCode('101', [bkGuard, bkBar]);
       end;
-    bcEAN_13  :
+    TStBarcodeType.EAN_13  :
       begin
         {get check digit}
         if Length(C) = 12 then
@@ -1018,41 +1278,49 @@ begin
 
         {determine which left hand table to use based on first flag character}
         {EAN refers to this as the 13th digit - counting from the right}
-        case bcDigits[1] of
-                     { 12345}
-          0 : CSP := 'AAAAAA';
-          1 : CSP := 'AABABB';
-          2 : CSP := 'AABBAB';
-          3 : CSP := 'AABBBA';
-          4 : CSP := 'ABAABB';
-          5 : CSP := 'ABBAAB';
-          6 : CSP := 'ABBBAA';
-          7 : CSP := 'ABABAB';
-          8 : CSP := 'ABABBA';
-          9 : CSP := 'ABBABA';
+        CSP := CEAN_Handedness[bcDigits[1]];
+
+        if FShowCode then
+        begin
+          bcBarInfo.AddDigit(bcDigits[1]);
+          bcBarInfo.Add(_TextSpace,[bkSpace,bkBlankSpace]);
         end;
+
         {encode left hand guard bars}
         AddCode('101', [bkGuard, bkBar]);
         {start with second flag character and next five data characters}
         for I := 2 to 7 do
+        begin
+          if FShowCode then
+            bcBarInfo.AddDigit(bcDigits[I]);
           if CSP[I-1] = 'A' then
             AddCode(EAN_LeftHandA[bcDigits[I]], [bkBar])
           else
             AddCode(EAN_LeftHandB[bcDigits[I]], [bkBar]);
+        end;
         {encode center guard bars}
         AddCode('01010', [bkGuard, bkBar]);
         {encode last five data characters}
         for I := 8 to 12 do
+        begin
+          if FShowCode then
+            bcBarInfo.AddDigit(bcDigits[I]);
           AddCode(UPC_A_RightHand[bcDigits[I]], [bkBar]);
+        end;
+
+        if FShowCode then
+          bcBarInfo.AddDigit(CheckC);
+
         {check character}
         AddCode(UPC_A_RightHand[CheckC], [bkBar]);
         {encode right hand guard bars}
         AddCode('101', [bkGuard, bkBar]);
       end;
-    bcInterleaved2of5 :
+    TStBarcodeType.Interleaved2of5 :
       begin
         {add check character}
-        if FAddCheckChar then begin
+        if FAddCheckChar then
+        begin
           {get check digit}
           GetCheckCharacters(C, CheckC, CheckK);
           Inc(bcDigitCount);
@@ -1066,12 +1334,21 @@ begin
         bcBarInfo.Add(1, [bkGuard, bkSpace]);
 
         I := 1;
-        while I < bcDigitCount do begin
+        while I < bcDigitCount do
+        begin
           {take two characters at a time - odd as bars, even as spaces}
           C1 := Interleaved_2of5[bcDigits[I]];
           C2 := Interleaved_2of5[bcDigits[I+1]];
           {interleave data}
-          for J := 1 to 5 do begin
+          for J := 1 to 5 do
+          begin
+            if FShowCode then
+            begin
+              if J = 1 then
+                bcBarInfo.AddDigit(bcDigits[i])
+              else if  j = 3 then
+                bcBarInfo.AddDigit(bcDigits[i+1]);
+            end;
             if C1[J] = '1' then
               bcBarInfo.Add(FBarNarrowToWideRatio, [bkBar]) {wide bar}
             else
@@ -1090,20 +1367,23 @@ begin
         bcBarInfo.Add(1, [bkGuard, bkSpace]);
         bcBarInfo.Add(1, [bkGuard, bkBar]);
       end;
-    bcCodabar :
+    TStBarcodeType.Codabar :
       begin
-        for I := 1 to bcDigitCount do begin
+        for I := 1 to bcDigitCount do
+        begin
+          bcBarInfo.AddText(Code[i]);
           AddCodeWideNarrow(Codabar[bcDigits[I]]);
           if I < bcDigitCount then
             bcBarInfo.Add(1, [bkSpace]);
         end;
       end;
-    bcCode11 :
+    TStBarcodeType.Code11 :
       begin
         AddCodeWideNarrow(Code11[11]);  {start}
         bcBarInfo.Add(1, [bkSpace]);
         {add check characters}
-        if FAddCheckChar then begin
+        if FAddCheckChar then
+        begin
           {get check digits}
           GetCheckCharacters(C, CheckC, CheckK);
           Inc(bcDigitCount);
@@ -1112,17 +1392,22 @@ begin
           bcDigits[bcDigitCount] := CheckK;
         end;
 
-        for I := 1 to bcDigitCount do begin
+        for I := 1 to bcDigitCount do
+        begin
+          bcBarInfo.AddText(Code[i]);
           AddCodeWideNarrow(Code11[bcDigits[I]]);
           bcBarInfo.Add(1, [bkSpace]);
         end;
         AddCodeWideNarrow(Code11[11]);  {stop}
       end;
-    bcCode39 :
+    TStBarcodeType.Code39 :
       begin
-        for I := 1 to bcDigitCount do begin
+        for I := 1 to bcDigitCount do
+        begin
+          bcBarInfo.AddText(Code[i]);
           C1 := Code39[bcDigits[I]];
-          for J := 1 to Length(C1) do begin
+          for J := 1 to Length(C1) do
+          begin
             case C1[J] of
               '0' : if Odd(J) then
                       bcBarInfo.Add(1, [bkBar])
@@ -1137,12 +1422,13 @@ begin
           bcBarInfo.Add(1, [bkSpace]);
         end;
       end;
-    bcCode93 :
+    TStBarcodeType.Code93 :
       begin;
         {start character}
         AddCodeModules('111141');
         {add check characters}
-        if FAddCheckChar then begin
+        if FAddCheckChar then
+        begin
           {get check digits}
           GetCheckCharacters(C, CheckC, CheckK);
           Inc(bcDigitCount);
@@ -1151,14 +1437,22 @@ begin
           bcDigits[bcDigitCount] := CheckK;
         end;
         for I := 1 to bcDigitCount do
+        begin
+          if FShowCode then
+            bcBarInfo.AddText(Code[i]);
           AddCodeModules(Code93[bcDigits[I]]);
+        end;
         {stop character}
         AddCodeModules('1111411');
       end;
-    bcCode128 :
+    TStBarcodeType.Code128A,
+    TStBarcodeType.Code128B,
+    TStBarcodeType.Code128C,
+    TStBarcodeType.Code128 :
       begin
         {add check character}
-        if FAddCheckChar then begin
+        if FAddCheckChar then
+        begin
           GetCheckCharacters(C, CheckC, CheckK);
           Inc(bcDigitCount);
           bcDigits[bcDigitCount] := CheckC;
@@ -1167,13 +1461,17 @@ begin
         Inc(bcDigitCount);
         bcDigits[bcDigitCount] := 106;
         for I  := 1 to bcDigitCount do
+        begin
           AddCodeModules(Code128[bcDigits[I]]);
+        end;
       end;
   end;
 
-  if FBarCodeType in [bcUPC_A, bcUPC_E, bcEAN_8, bcEAN_13] then begin
+  if FBarCodeType in [TStBarcodeType.UPC_A, TStBarcodeType.UPC_E, TStBarcodeType.EAN_8, TStBarcodeType.EAN_13] then
+  begin
     {add supplemental encodings if requested}
-    if Length(FSupplementalCode) in [2, 5] then begin
+    if Length(FSupplementalCode) in [2, 5] then
+    begin
       {get digits}
       bcDigitCount := GetDigits(FSupplementalCode);
       {7 spaces after primary code - 0000000}
@@ -1181,375 +1479,580 @@ begin
       {encode left hand guard bars, 1011}
       AddCode('1011', [bkThreeQuarterBar, bkSupplement]);
 
-      if bcDigitCount = 2 then begin
+      if bcDigitCount = 2 then
+      begin
         {two digit supplement}
         {determine parity table to use for each of the two characters}
         X := bcDigits[1] * 10 + bcDigits[2];
-        case X mod 4 of
-          0 : AddSupCode('OO');
-          1 : AddSupCode('OE');
-          2 : AddSupCode('EO');
-          3 : AddSupCode('EE');
-         end;
-      end else begin
+        AddSupCode(CEAN_SupCodeParitySmall[X mod 4]);
+      end
+      else
+      begin
         {five digit supplement}
         {determine the parity pattern to use for each of the five}
-        X := ((bcDigits[1] + bcDigits[3] + bcDigits[5])*3 + (bcDigits[2] + bcDigits[4])*9) mod 10;
-        case X of
-          0 : AddSupCode('EEOOO');
-          1 : AddSupCode('EOEOO');
-          2 : AddSupCode('EOOEO');
-          3 : AddSupCode('EOOOE');
-          4 : AddSupCode('OEEOO');
-          5 : AddSupCode('OOEEO');
-          6 : AddSupCode('OOOEE');
-          7 : AddSupCode('OEOEO');
-          8 : AddSupCode('OEOOE');
-          9 : AddSupCode('OOEOE');
-        end;
+        X :=  ((bcDigits[1] + bcDigits[3] + bcDigits[5])*3 + (bcDigits[2] + bcDigits[4])*9) mod 10;
+        AddSupCode(CEAN_SupCodeParity[X]);
       end;
     end;
   end;
+  bcDirty := false;
 end;
 
-procedure TStBarCode.CalcBarCodeWidth;
+procedure incf(var AVal :double; AIncBy : Double);
+begin
+  AVal := AVal + AIncBy;
+end;
+procedure decf(var AVal :double; AIncBy : Double);
+begin
+  AVal := AVal - AIncBy;
+end;
+
+procedure TStBarcode.IncrementBarPosn( const AData : TStBarData; var normalWidth, spaceWidth, supplementWidth : double);
+begin
+  //
+  if bkSpace in AData.Kind then
+  begin
+    if bkBlankSpace in AData.Kind then
+      Incf(spaceWidth, bcSpaceModWidth*AData.Modules)
+    else if bkSupplement in AData.Kind then
+      Incf(supplementWidth, bcSpaceModWidth*AData.Modules)
+    else
+      Incf(normalWidth, bcSpaceModWidth*AData.Modules)
+  end
+  else
+  begin
+    if bkBlankSpace in AData.Kind then
+      Incf(spaceWidth, bcBarModWidth*AData.Modules)
+    else if bkSupplement in AData.Kind then
+      Incf(supplementWidth, bcBarModWidth*AData.Modules)
+    else
+      Incf(normalWidth, bcBarModWidth*AData.Modules)
+  end;
+end;
+
+procedure TStBarcode.CalcBarCodeWidth;
 var
   I : Integer;
 begin
+  if bcDirty or (FBarcodeType = TStBarcodeType.Code128) then
+    CalcBarCode;
+
   bcNormalWidth := 0;
   bcSpaceWidth := 0;
   bcSupplementWidth := 0;
-  for I := 0 to bcBarInfo.Count-1 do begin
-    if bkSpace in bcBarInfo[I].Kind then begin
-      if bkBlankSpace in bcBarInfo[I].Kind then
-        Inc(bcSpaceWidth, bcSpaceModWidth*bcBarInfo[I].Modules)
-      else if bkSupplement in bcBarInfo[I].Kind then
-        Inc(bcSupplementWidth, bcSpaceModWidth*bcBarInfo[I].Modules)
-      else
-        Inc(bcNormalWidth, bcSpaceModWidth*bcBarInfo[I].Modules)
-    end else begin
-      if bkBlankSpace in bcBarInfo[I].Kind then
-        Inc(bcSpaceWidth, bcBarModWidth*bcBarInfo[I].Modules)
-      else if bkSupplement in bcBarInfo[I].Kind then
-        Inc(bcSupplementWidth, bcBarModWidth*bcBarInfo[I].Modules)
-      else
-        Inc(bcNormalWidth, bcBarModWidth*bcBarInfo[I].Modules)
-    end;
-  end;
+  for I := 0 to bcBarInfo.Count-1 do
+    IncrementBarPosn(bcBarInfo[I], bcNormalWidth, bcSpaceWidth, bcSupplementWidth);
 end;
 
-procedure TStBarCode.CMTextChanged(var Msg : TMessage);
+constructor TStBarcode.Create(AText : String);
 begin
-  CalcBarCode;
-  Invalidate;
+  inherited Create;
+  Code := AText;
 end;
 
-procedure TStBarCode.CopyToClipboard;
-var
-  MetaFile       : TMetaFile;
-  MetaFileCanvas : TMetaFileCanvas;
-  Bitmap         : TBitmap;
+procedure TStBarcode.AfterConstruction;
 begin
-  Clipboard.Clear;
-  Clipboard.Open;
-  try
-    {bitmap}
-    Bitmap := TBitmap.Create;
-    try
-      Bitmap.Width := ClientWidth;
-      Bitmap.Height := ClientHeight;
-      PaintToDC(Bitmap.Canvas.Handle, ClientRect);
-      Clipboard.Assign(Bitmap);
-
-      {metafile}
-      MetaFile := TMetaFile.Create;
-      try
-        MetaFileCanvas := TMetaFileCanvas.Create(MetaFile, 0);
-        try
-          MetaFile.Enhanced := True;
-          MetaFile.Width := ClientWidth;
-          MetaFile.Height := ClientHeight;
-          MetaFileCanvas.Draw(0, 0, Bitmap);
-        finally
-          MetaFileCanvas.Free;
-        end;
-        Clipboard.Assign(MetaFile);
-      finally
-        MetaFile.Free;
-      end;
-
-    finally
-      Bitmap.Free;
-    end
-  finally
-    Clipboard.Close;
-  end;
-end;
-
-constructor TStBarCode.Create(AOwner : TComponent);
-begin
-  inherited Create(AOwner);
-
-  bcBarInfo := TStBarCodeInfo.Create;
-
-  {defaults}
-  Color := clWhite;
-  Width := 200;
-  Height := 75;
-  Text := '123456789012';
-
+  inherited;
   FAddCheckChar := True;
-  FBarColor := clBlack;
   FBarToSpaceRatio := 1;
   FBarNarrowToWideRatio := bcDefNarrowToWideRatio;
-  FBarWidth := 12;
+  FBarWidth := 0.38; // 0.35 normal minimum
   FShowCode := True;
   FShowGuardChars := False;
-  FTallGuardBars := False;
+  FTallGuardBars := true;
   FExtendedSyntax := False;
 end;
 
-destructor TStBarCode.Destroy;
+function TStBarcode.SelectBarcodeType( ATypes :  TBarCodeTypes) : boolean;
 begin
-  bcBarInfo.Free;
-  bcBarInfo := nil;
+  if bcAny in ATypes then
+    ATypes := ATypes + [bcEAN,bcUPC, bc128];
+  if bcWithChecksum in ATypes then
+  begin
+    if bcEAN in ATypes then
+    begin
+      Exclude(ATypes, bcEAN);
+      Include(Atypes, bcEANCS);
+    end;
+    if bcUPC in ATypes then
+    begin
+      Exclude(ATypes, bcUPC);
+      Include(Atypes, bcUPCCS);
+    end;
+    if bcISBN in ATypes then
+    begin
+      Exclude(ATypes, bcISBN);
+      Include(Atypes, bcISBNCS);
+    end;
+    if bcCBR in ATypes then
+    begin
+      Exclude(ATypes, bcCBR);
+      Include(Atypes, bcCBRCS);
+    end;
+  end;
 
-  inherited Destroy;
+  // Check for matching checksums
+  var bcTypes :  TStBarCodeTypes := [];
+  for var bc in ATypes do
+  begin
+    case bc of
+      bcEANCS: bcTypes := bcTypes + [TStBarcodeType.EAN_8,TStBarcodeType.EAN_13];
+      bcUPCCS: bcTypes := bcTypes + [TStBarcodeType.UPC_A, TStBarcodeType.UPC_E];
+      bcISBNCS:Include(bcTypes, TStBarcodeType.EAN_13);
+      bcCBRCS: Include(bcTypes, TStBarcodeType.Codabar);
+    end;
+  end;
+  if bcTypes <> [] then
+  begin
+    if SelectBarcodeType(bctypes, TStAutoSelect.WithCheck) then
+      exit(true);
+  end;
+
+  // Check for length where checksum can be added.
+  bcTypes := [];
+  for var bc in ATypes do
+  begin
+    case bc of
+      bcEAN: bcTypes := bcTypes + [TStBarcodeType.EAN_8,TStBarcodeType.EAN_13];
+      bcUPC: bcTypes := bcTypes + [TStBarcodeType.UPC_A, TStBarcodeType.UPC_E];
+      bcISBN:Include(bcTypes, TStBarcodeType.EAN_13);
+      bcCBR: Include(bcTypes, TStBarcodeType.Codabar);
+    end;
+  end;
+  (*
+  if (TStBarCodeType.UPC_A in bcTypes) and (TStBarCodeType.EAN_13 in bcTypes) then
+    Exclude(bcTypes, TStBarCodeType.UPC_A);
+  *)
+
+  if bcTypes <> [] then
+  begin
+    if SelectBarcodeType(bctypes, TStAutoSelect.WithoutCheck) then
+      exit(true);
+  end;
+
+  // Fallback to those without checksum.
+  bcTypes := [];
+  for var bc in ATypes do
+  begin
+    case bc of
+      bc39:  Include(bcTypes, TStBarcodeType.Code39);
+      bc128: Include(bcTypes, TStBarcodeType.Code128);
+      bc128C:Include(bcTypes, TStBarcodeType.Code128C);
+      bc128B:Include(bcTypes, TStBarcodeType.Code128B);
+      bcI25: Include(bcTypes, TStBarcodeType.Interleaved2of5);
+      bc93:  Include(bcTypes, TStBarcodeType.Code93);
+    end;
+  end;
+
+  if bcTypes <> [] then
+  begin
+    if SelectBarcodeType(bctypes, TStAutoSelect.Both) then
+      exit(true);
+  end;
+  result := false;
 end;
 
-function TStBarCode.DrawBar(XPos, YPos, AWidth, AHeight : Integer) : Integer;
-begin
-  Canvas.Rectangle(XPos, YPos, XPos+AWidth, YPos+AHeight);
-  Result := XPos + AWidth;
-end;
-
-procedure TStBarCode.DrawBarCode(const R : TRect);
+function TStBarcode.SelectBarcodeType(AType : TStBarCodeTypes; ACSMode: TStAutoSelect) : boolean;
 var
-  I, X, Y        : Integer;
-  CheckC         : Integer;
-  CheckK         : Integer;
-  TH, GA, TQ, BB : Integer;
-  BarCodeHeight  : Integer;
-  BarCodeWidth   : Integer;
-  PixelsPerInchX : Integer;
-  TR             : TRect;
+  digits : TStDigitArray;
+  c, k: integer;
+
+begin
+  var hasDigits : boolean := false;
+  var hasAlpha : boolean := false;
+  var hasOther : boolean := false;
+  var hasSpace : boolean := false;
+  for var ch in Code do
+  begin
+    case ch of
+      '0'..'9': hasDigits := true;
+      'a'..'z',
+      'A'..'Z': hasAlpha := true;
+      ' ': hasSpace := true;
+    else hasOther := true;
+    end;
+  end;
+  if (not hasDigits) or hasAlpha or hasOther or hasSpace then
+  begin
+    AType := AType - [TStBarcodeType.EAN_8, TStBarcodeType.EAN_13, TStBarcodeType.UPC_A, TStBarcodeType.UPC_E];
+  end;
+  case Length(Code) of
+    7:{ean8-cs,upce-cs}
+    begin
+      if (TStBarcodeType.EAN_8 in AType) and (ACSMode <> TStAutoSelect.WithCheck) then
+      begin
+        try
+          GetDigits(TStBarcodeType.EAN_8, Code, digits);
+          SetBarCodeType(TStBarcodeType.EAN_8);
+          exit(true);
+        except
+          on E : EStBarCodeError do
+            Exclude(AType, TStBarcodeType.EAN_8);
+        end;
+      end;
+      if (TStBarcodeType.UPC_E in AType) and (ACSMode <> TStAutoSelect.WithCheck) then
+      begin
+        try
+          var len := GetDigits(TStBarcodeType.UPC_E, Code, digits);
+          DoGetCheckCharacters(TStBarcodeType.UPC_E, digits, len, C, K);
+          SetBarCodeType(TStBarcodeType.UPC_E);
+          exit(true);
+        except
+          on E : EStBarCodeError do
+            Exclude(AType, TStBarcodeType.UPC_E);
+        end;
+      end;
+
+    end;
+    8:{ean8+cs, upce+cs}
+    begin
+      if (TStBarcodeType.EAN_8 in AType) and (ACSMode <> TStAutoSelect.WithoutCheck) then
+      begin
+        try
+          var len := GetDigits(TStBarcodeType.EAN_8, Code, digits);
+          DoGetCheckCharacters(TStBarcodeType.EAN_8, digits, len, C, K);
+          if digits[8] = C then
+          begin
+            SetBarCodeType(TStBarcodeType.EAN_8);
+            exit(true);
+          end;
+
+        except
+          on E : EStBarCodeError do
+            Exclude(AType, TStBarcodeType.EAN_8);
+        end;
+      end;
+      if (TStBarcodeType.UPC_E in AType) and (ACSMode <> TStAutoSelect.WithoutCheck) then
+      begin
+        try
+          var len := GetDigits(TStBarcodeType.UPC_E, Code, digits);
+          DoGetCheckCharacters(TStBarcodeType.UPC_E, digits, len, C, K);
+          if digits[8] = C then
+          begin
+            SetBarCodeType(TStBarcodeType.UPC_E);
+            exit(true);
+          end;
+        except
+          on E : EStBarCodeError do
+            Exclude(AType, TStBarcodeType.UPC_E);
+        end;
+      end;
+    end;
+    11:{upcA-cs}
+    begin
+      if (TStBarcodeType.UPC_A in AType) and (ACSMode <> TStAutoSelect.WithCheck) then
+      begin
+        try
+          GetDigits(TStBarcodeType.UPC_A, Code, digits);
+          SetBarCodeType(TStBarcodeType.UPC_A);
+          exit(true);
+        except
+          on E : EStBarCodeError do
+            Exclude(AType, TStBarcodeType.UPC_A);
+        end;
+      end;
+    end;
+    12:{ean13-cs}{upca+cs}
+    begin
+      if (TStBarcodeType.UPC_A in AType) and (ACSMode <> TStAutoSelect.WithoutCheck) then
+      begin
+        try
+          var len := GetDigits(TStBarcodeType.UPC_A, Code, digits);
+          DoGetCheckCharacters(TStBarcodeType.UPC_A, digits, len, C, K);
+          if digits[12] <> C then
+            exclude(AType, TStBarcodeType.UPC_A)
+          else
+          begin
+            SetBarCodeType( TStBarcodeType.UPC_A);
+            exit(true);
+          end;
+        except
+          on E : EStBarCodeError do
+            Exclude(AType, TStBarcodeType.UPC_A);
+        end;
+      end;
+
+      if (TStBarcodeType.EAN_13 in AType) and (ACSMode <> TStAutoSelect.WithCheck) then
+      begin
+        try
+          GetDigits(TStBarcodeType.EAN_13, Code, digits);
+          SetBarCodeType( TStBarcodeType.EAN_13);
+          exit(true);
+        except
+          on E : EStBarCodeError do
+            Exclude(AType, TStBarcodeType.EAN_13);
+        end;
+      end;
+    end;
+    13:{ean13+cs}
+    begin
+      if (TStBarcodeType.EAN_13 in AType) and (ACSMode <> TStAutoSelect.WithoutCheck) then
+      begin
+        try
+          var len := GetDigits(TStBarcodeType.EAN_13, Code, digits);
+          DoGetCheckCharacters(TStBarcodeType.EAN_13, digits, len, C, K);
+          if not ChMatches(Code.Chars[12], C) then
+            exclude(AType, TStBarcodeType.EAN_13)
+          else
+          begin
+            SetBarCodeType( TStBarcodeType.EAN_13);
+            exit(true);
+          end;
+        except
+          on E : EStBarCodeError do
+            Exclude(AType, TStBarcodeType.EAN_13);
+        end;
+      end;
+    end;
+  end;
+  if TStBarcodeType.Code128 in AType then
+    AType := AType + _Code128 - [TStBarcodeType.Code128]; // Expand Code128
+
+  for var bctype in (AType- [TStBarcodeType.EAN_13, TStBarcodeType.EAN_8, TStBarcodeType.UPC_A, TStBarcodeType.UPC_E]) do
+  begin
+    try
+      GetDigits(bcType, Code, digits);
+      SetBarCodeType( bcType);
+      exit(true);
+    except
+      on E : EStBarCodeError do
+        ;
+    end;
+  end;
+  result := false;
+end;
+
+procedure TStBarcode.Invalidate;
+begin
+  bcDirty := true;
+end;
+
+procedure TStBarcode.DrawBarCode(ACanvas : TStBarcodeCanvas; const R : TRectF; AScale : Double = 1;ACenter : boolean = true);
+
+  procedure StripCode128NonPrintable(var ACode : String);
+  begin
+    {remove non-printable characters}
+    var escaped := false;
+    var outpos := 1;
+    for var i := 1 to Length(ACode) do
+    begin
+      var ch := ACode[I];
+      var doout := true;
+      case ch of
+        #0..pred(' '):
+          begin
+            doOut := false;
+            escaped := false;
+          end;
+        '\':
+          if ExtendedSyntax then
+          begin
+            if escaped then
+              escaped := false
+            else
+            begin
+              escaped := true;
+              doout := false;
+            end;
+          end;
+        'A', 'B', 'C', 'a', 'b', 'c':
+          if escaped then
+          begin
+            ch := ' ';
+            escaped := false;
+          end;
+      else
+        escaped := false;
+      end;
+      if doout then
+      begin
+        ACode[outpos] := ch;
+        inc(outpos);
+      end;
+    end;
+    if escaped then
+    begin
+      ACode[outpos] := '\';
+      inc(outpos);
+    end;
+    SetLength(ACode, outpos-1);
+  end;
+  function DrawBar(XPos, YPos, AWidth, AHeight : double) : double;
+  begin
+    ACanvas.DrawLine(XPos, YPos, XPos+AWidth, YPos+AHeight);
+    Result := XPos + AWidth;
+  end;
+var
+  I              : Integer;
+  X, Y           : Double;
+  TH, GA, GAB,
+  TQ, BB         : Double;
+  BarCodeHeight  : double;
+  BarCodeWidth   : double;
   SmallestWidth  : Double;
   C              : string;
-  Buf            : array[0..512] of Char;
 begin
-  Canvas.Brush.Color := FBarColor;
-  Canvas.Brush.Style := bsSolid;
-
-  PixelsPerInchX := GetDeviceCaps(Canvas.Handle, LOGPIXELSX);
+  if bcDirty or (FBarcodeType = TStBarcodeType.Code128) then
+    CalcBarCode;
 
   {determine narrowest line width}
-  SmallestWidth := SmallestLineWidth(PixelsPerInchX);
+  SmallestWidth := SmallestLineWidth;
 
   {find sizes for the BarCode elements}
-  bcBarModWidth := Round(FBarWidth/1000 * PixelsPerInchX);
-  if bcBarModWidth < FBarToSpaceRatio then
-    bcBarModWidth := Round(BarToSpaceRatio);
+  bcBarModWidth := FBarWidth * AScale;
+
   if bcBarModWidth < SmallestWidth then
-    bcBarModWidth := Round(SmallestWidth);
-  bcSpaceModWidth := Round(bcBarModWidth / FBarToSpaceRatio);
+    bcBarModWidth := SmallestWidth;
+  bcSpaceModWidth := bcBarModWidth / FBarToSpaceRatio;
 
   {total width of BarCode and position within rect}
   CalcBarCodeWidth;
   BarCodeWidth := bcNormalWidth + bcSpaceWidth + bcSupplementWidth;
-  BarCodeHeight := RectHeight(R);
-  if BarCodeWidth < RectWidth(R) then
-    X := R.Left + (RectWidth(R)-BarCodeWidth) div 2
+  BarCodeHeight := R.Height;
+  if ACenter and (BarCodeWidth < R.Width) then
+    X := R.Left + (R.Width-BarCodeWidth) / 2
   else
     X := R.Left;
   Y := R.Top;
 
-  {get text height}
-  TH := Canvas.TextHeight('Yg0');
-
   {guard bar adjustment}
-  GA := (BarCodeHeight*10) div 100; {10% of bar height}
-  {but, not more than 1/4 of the font height}
-  if FShowCode and (GA > TH div 4) then
-    GA := TH div 4;
+  GA := (BarCodeHeight*10) / 100; {10% of bar height}
+  GAB := GA;
 
   {three quarter height bar adjustment}
-  TQ := BarCodeHeight div 4;
+  TQ := BarCodeHeight / 4;
 
   {draw the text}
-  if FShowCode and (Code > '') then begin
-    C := Code;
-    {fill out invalid codes}
-    case FBarCodeType of
-      bcUPC_A  :
-        begin
-          C := Copy(C, 1, 12); {truncate}
-          if Length(C) = 11 then begin
-            GetCheckCharacters(C, CheckC, CheckK);
-            C := C + IntToStr(CheckC);
-          end;
-          while Length(C) < 12 do
-            C := C + '0';
-        end;
-      bcUPC_E  :
-        begin
-          C := Copy(C, 1, 6); {truncate}
-          while Length(C) < 6 do
-            C := C + '0';
-        end;
-      bcEAN_8  :
-        begin
-          C := Copy(C, 1, 8); {truncate}
-          if Length(C) = 7 then begin
-            GetCheckCharacters(C, CheckC, CheckK);
-            C := C + IntToStr(CheckC);
-          end;
-          while Length(C) < 8 do
-            C := C + '0';
-        end;
-      bcEAN_13 :
-        begin
-          C := Copy(C, 1, 13); {truncate}
-          if Length(C) = 12 then begin
-            GetCheckCharacters(C, CheckC, CheckK);
-            C := C + IntToStr(CheckC);
-          end;
-          while Length(C) < 13 do
-            C := C + '0';
-        end;
-      bcInterleaved2of5 :
-        begin
-          if Odd(Length(C)) then
-            C := '0' + C;
-        end;
-      bcCodabar :
-        begin
-          if not FShowGuardChars then
-            {strip leading and trailing characters}
-            C := Copy(C, 2, Length(C)-2);
-        end;
-      bcCode11 :
-        begin
-        end;
-      bcCode39 :
-        begin
-          {add guard characters}
-          if C[1] <> '*' then
-            C := '*' + C;
-          if C[Length(C)] <> '*' then
-            C := C + '*';
-          if not FShowGuardChars then
-            {strip leading and trailing characters}
-            C := Copy(C, 2, Length(C)-2);
-        end;
-      bcCode93 :
-        begin
-          {remove non-printable characters}
-          for I := 1 to Length(C) do
-            if C[I] < ' ' then
-              C[I] := ' ';
-        end;
-      bcCode128 :
-        begin
-          {remove non-printable characters}
-          I := 1;
-          while I <= Length (C) do begin
-            if C[I] < ' ' then
-              C[I] := ' ';
-            if (i < Length (C)) and (ExtendedSyntax) then begin
-              if (C[I] = '\') and
-                 CharInSet(C[I + 1], ['A', 'B', 'C', 'a', 'b', 'c']) then begin
-                C[I] := ' ';
-                C[I + 1] := ' ';
-                Inc (I);
-              end else if (C[I] = '\') and (C[I+1] = '\') then begin
-                C[I] := ' ';
-                Inc (I);
-              end;
-            end;
-            Inc (I);
-          end;
-        end;
-    end;
+  if FShowCode and (Code > '') then
+  begin
 
-    Dec(BarCodeHeight, TH + (TH div 4));
-    Canvas.Brush.Style := bsClear;
-    {guard bar adjustment - again}
-    GA := (BarCodeHeight*10) div 100; {10% of bar height}
-    {but, not more than 1/4 of the font height}
-    if FShowCode and (GA > TH div 4) then
-      GA := TH div 4;
+    {get text height}
+    ACanvas.SetFontSize( _FontSizeMM[TStTextSize.Normal] );
+    TH := ACanvas.GetTextExtents('Yg0').Y;
+
+    Decf(BarCodeHeight, TH + (0.1{mm}*AScale));
+    {guard bar adjustment}
+    GAB := TH / 2;
+
     {three quarter height bar adjustment}
-    TQ := BarCodeHeight div 4;
+    TQ := BarCodeHeight / 4;
 
-    if FBarCodeType = bcUPC_A then begin
-      {print first and last character to sides of symbol}
-      TR.Top := Y;
-      TR.Bottom := TR.Top + BarCodeHeight;
-      {left hand character}
-      Buf[0] := C[1];
-      TR.Right := X;
-      TR.Left := X - 2 * Canvas.TextWidth(C[1]);
-      DrawText(Canvas.Handle, @Buf, 1, TR, DT_BOTTOM or DT_CENTER or DT_SINGLELINE);
-      {remove character from code to print}
-      C := Copy(C, 2, Length(C)-1);
+    var lastpos := 0;
+    var XTxt : double := X + (0.6{mm} * AScale);
+    var YTxt : double := Y + BarCodeHeight + (0.3{mm} * AScale);
 
-      {right hand character - if no supplemental code}
-      if FSupplementalCode = '' then begin
-        Buf[0] := C[Length(C)];
-        TR.Left := X + bcNormalWidth;
-        TR.Right := X + bcNormalWidth +  2 * Canvas.TextWidth(C[Length(C)]);
-        DrawText(Canvas.Handle, @Buf, 1, TR, DT_BOTTOM or DT_CENTER or DT_SINGLELINE);
-        {remove character from code to print}
-        C := Copy(C, 1, Length(C)-1);
+    if bcBarInfo.TextItemCount = 0 then
+    begin
+      C := Code;
+      case FBarCodeType of
+        TStBarcodeType.Interleaved2of5 :
+          begin
+            if Odd(Length(C)) then
+              C := '0' + C;
+          end;
+        TStBarcodeType.Codabar :
+          begin
+            if not FShowGuardChars then
+              {strip leading and trailing characters}
+              C := Copy(C, 2, Length(C)-2);
+          end;
+        TStBarcodeType.Code39 :
+          begin
+            {add guard characters}
+            if C[1] <> '*' then
+              C := '*' + C;
+            if C[Length(C)] <> '*' then
+              C := C + '*';
+            if not FShowGuardChars then
+              {strip leading and trailing characters}
+              C := Copy(C, 2, Length(C)-2);
+          end;
+        TStBarcodeType.Code93 :
+          begin
+            {remove non-printable characters}
+            for I := 1 to Length(C) do
+              if C[I] < ' ' then
+                C[I] := ' ';
+          end;
+        TStBarcodeType.Code128A,
+        TStBarcodeType.Code128B,
+        TStBarcodeType.Code128C,
+        TStBarcodeType.Code128 :
+          StripCode128NonPrintable(C);
+
+      end;
+      var tw := ACanvas.GetTextExtents(C).x;
+      var xoffset := (BarCodeWidth - tw) / 2;
+      ACanvas.TextOut(X+xoffset, YTxt, C);
+    end
+    else
+    begin
+      var fontSize := TStTextSize.Normal; // Already set to this.
+      var topAdjust : double := 0;
+
+      for I := 0 to bcBarInfo.TextItemCount-1 do
+      begin
+        var ti := bcBarInfo.TextItems[I];
+        if fontSize <> ti.Size then
+        begin
+          fontSize := ti.Size;
+          ACanvas.SetFontSize(_FontSizeMM[fontSize]);
+          if fontSize = TStTextSize.Normal then
+            topAdjust := 0
+          else
+          begin
+            var oth : double := ACanvas.GetTextExtents('Yg0').Y;
+            topAdjust := TH-oth;
+          end;
+        end;
+
+        // Position output under corresponding bar section
+        for var J := lastPos to Min(ti.BarIdx, bcBarInfo.Count)-1 do
+          IncrementBarPosn(bcBarInfo[J], XTxt, XTxt, XTxt);
+        lastPos := ti.BarIdx;
+        ACanvas.TextOut(XTxt, YTxt + topAdjust, ti.Text);
       end;
     end;
 
-    if FSupplementalCode > '' then begin
-      {draw supplemental code above the code}
-      TR.Top := Y + TQ - TH;
-      TR.Bottom := Y + BarCodeHeight;
-      TR.Left := X + bcNormalWidth + bcSpaceWidth;
-      TR.Right := TR.Left + bcSupplementWidth;
-      StrPLCopy(Buf, FSupplementalCode, Length(Buf)-1);
-      DrawText(Canvas.Handle, @Buf, StrLen(Buf), TR, DT_VCENTER or DT_CENTER);
-    end;
-
-    TR := R;
-    TR.Top := R.Top + BarCodeHeight + (TH div 4);
-    TR.Left := X;
-    TR.Right := TR.Left + bcNormalWidth;
-    Canvas.Brush.Style := bsClear;
-    StrPLCopy(Buf, C, Length(Buf)-1);
-    DrawText(Canvas.Handle, @Buf, StrLen(Buf), TR, DT_VCENTER or DT_CENTER);
-    Canvas.Brush.Style := bsSolid;
-    Canvas.Brush.Color := FBarColor;
   end;
 
-  if (FBarCodeType = bcInterleaved2of5) and FBearerBars then begin
+  if (FBarCodeType = TStBarcodeType.Interleaved2of5) and FBearerBars then
+  begin
     BB := 3 * bcBarModWidth;
     {reduce height to allow for bearer bars}
-    Dec(BarCodeHeight, BB * 2);
+    DecF(BarCodeHeight, BB * 2);
     {draw the bearer bars}
-    Canvas.Rectangle(X-bcBarModWidth, Y,
+    DrawBar(X-bcBarModWidth, Y,
                      X+BarCodeWidth+bcBarModWidth, Y+BB);
-    Canvas.Rectangle(X-bcBarModWidth, Y+BarCodeHeight+BB,
+    DrawBar(X-bcBarModWidth, Y+BarCodeHeight+BB,
                      X+BarCodeWidth+bcBarModWidth, Y+BarCodeHeight+BB*2);
     {adjust top of BarCode}
-    Inc(Y, BB);
+    IncF(Y, BB);
   end;
 
   {draw the bar code}
-  for I := 0 to bcBarInfo.Count-1 do begin
+
+  // Guard bar attributes
+  var ygstart : Double := Y;
+  var ygHeight : Double := BarCodeHeight;
+  if FTallGuardBars then
+  begin
+    if bcGuardBarAbove then
+    begin
+      DecF(ygstart, GA);
+      IncF(ygHeight, GA);
+    end;
+    if bcGuardBarBelow then
+      IncF(ygHeight, GAB);
+  end;
+
+  for I := 0 to bcBarInfo.Count-1 do
+  begin
     if bkSpace in bcBarInfo[I].Kind then
-      Inc(X, bcSpaceModWidth*bcBarInfo[I].Modules)
-    else if (bkGuard in bcBarInfo[I].Kind) and FTallGuardBars then begin
-      if bcGuardBarAbove and bcGuardBarBelow then
-        X := DrawBar(X, Y-GA, bcBarModWidth*bcBarInfo[I].Modules, BarCodeHeight+2*GA)
-      else if bcGuardBarAbove then
-        X := DrawBar(X, Y-GA, bcBarModWidth*bcBarInfo[I].Modules, BarCodeHeight+GA)
-      else if bcGuardBarBelow then
-        X := DrawBar(X, Y, bcBarModWidth*bcBarInfo[I].Modules, BarCodeHeight+2*GA)
-    end else if (bkBar in bcBarInfo[I].Kind) or (bkGuard in bcBarInfo[I].Kind) then
+      IncF(X, bcSpaceModWidth*bcBarInfo[I].Modules)
+    else if (bkGuard in bcBarInfo[I].Kind) then
+      X := DrawBar(X, ygStart, bcBarModWidth*bcBarInfo[I].Modules, ygHeight)
+    else if (bkBar in bcBarInfo[I].Kind) then
       X := DrawBar(X, Y, bcBarModWidth*bcBarInfo[I].Modules, BarCodeHeight)
     else if (bkThreeQuarterBar in bcBarInfo[I].Kind) then
       X := DrawBar(X, Y+TQ, bcBarModWidth*bcBarInfo[I].Modules, BarCodeHeight-TQ);
@@ -1557,215 +2060,360 @@ begin
 end;
 
  {added}
-function TStBarCode.GetBarCodeWidth(ACanvas : TCanvas) : Double;
+function TStBarcode.GetBarCodeWidth(AScale : Double = 1) : Double;
+begin
+  var ign_cmp : boolean;
+  result := GetbarcodeWidth(ign_cmp, AScale);
+end;
+
+function TStBarcode.GetBarCodeWidth(var ACanCompress : boolean; AScale : Double = 1) : Double;
 var
-  PixelsPerInchX : Integer;
   SmallestWidth  : Double;
 begin
-  PixelsPerInchX := GetDeviceCaps(ACanvas.Handle, LOGPIXELSX);
+  if bcDirty or (FBarcodeType = TStBarcodeType.Code128) then
+    CalcBarCode;
 
   {determine narrowest line width}
-  SmallestWidth := SmallestLineWidth(PixelsPerInchX);
+  SmallestWidth := SmallestLineWidth;
 
   {find sizes for the BarCode elements}
-  bcBarModWidth := Round(FBarWidth/1000 * PixelsPerInchX);
-  if bcBarModWidth < FBarToSpaceRatio then
-    bcBarModWidth := Round(BarToSpaceRatio);
-  if bcBarModWidth < SmallestWidth then
-    bcBarModWidth := Round(SmallestWidth);
-  bcSpaceModWidth := Round(bcBarModWidth / FBarToSpaceRatio);
+  bcBarModWidth := FBarWidth * AScale;
+
+  ACanCompress := bcBarModWidth > SmallestWidth;
+  if not ACanCompress then
+    bcBarModWidth := SmallestWidth;
+  bcSpaceModWidth := bcBarModWidth / FBarToSpaceRatio;
 
   CalcBarcodeWidth;
 
   {width in pixels (not counting text printed to left or right of code)}
   Result := bcNormalWidth + bcSpaceWidth + bcSupplementWidth;
-  {return width of barcode in inches}
-  Result := Result / PixelsPerInchX;
 end;
 
-procedure TStBarCode.GetCheckCharacters(const S : string; var C, K : Integer);
+function TStBarcode.GetCheckCharacters(const S : string; var C, K : Integer) : TStCheckResult;
+begin
+  var len := GetDigits(FBarCodeType, S, bcDigits);
+  bcDigitCount := len;
+  result := DoGetCheckCharacters(FBarcodeType, bcDigits, len, C, K);
+end;
+
+function TStBarcode.GetCheckCharacters(var C, K : Integer) : TStCheckResult;
+begin
+  if bcDirty or (FBarcodeType = TStBarcodeType.Code128) then
+    result := GetCheckCharacters(Code, C, K)
+  else
+    result := DoGetCheckCharacters(FBarcodeType, bcDigits, bcDigitCount, C, K);
+end;
+
+class function TStBarcode.ValidateCheckDigits(AType : TStBarCodeType; AExtSyntax : boolean; Const ABarcode : String) : boolean;
+var
+  digits : TStDigitArray;
+  c, K : integer;
+begin
+  try
+    var len := GetDigits(AType, ABarcode, AExtSyntax, digits);
+    DoGetCheckCharacters(AType, digits, len, c, k);
+    case AType of
+      TStBarcodeType.UPC_A,
+      TStBarcodeType.UPC_E,
+      TStBarcodeType.EAN_8,
+      TStBarcodeType.EAN_13,
+      TStBarcodeType.Codabar,
+      TStBarcodeType.Code39:
+      result := ChMatches(ABarcode[high(ABarcode)], C);
+
+      TStBarcodeType.Code11,
+      TStBarcodeType.Code93:
+        result := (ChMatches(ABarcode[pred(high(ABarcode))], C))
+              and (ChMatches(ABarcode[high(ABarcode)], K));
+    else
+      result := true;
+    end;
+  except
+    on E : EStBarCodeError do
+      result := false;
+  end;
+end;
+
+function TStBarcode.GetCheckCharacters(AType : TStBarCodeType; const S : string; var C, K : Integer) : TStCheckResult;
+var
+  digits : TStDigitArray;
+begin
+  var len := GetDigits(AType, S, digits);
+  result := DoGetCheckCharacters(AType, digits, len, C, K);
+end;
+
+class function TStBarcode.GetCheckCharacters(AType : TStBarCodeType; const S : string; var C, K : Integer; AExtendedSyntax : boolean = false) : TStCheckResult;
+var
+  digits : TStDigitArray;
+begin
+  var len := GetDigits(AType, S, AExtendedSyntax, digits);
+  result := DoGetCheckCharacters(AType, digits, len, C, K);
+end;
+
+class function TStBarcode.EANChecksum(const ADigits : TStDigitArray; ALen : Integer; AMode : TEanMode) : integer;
+var
+  esum, osum, sum : integer;
+  even : boolean;
+begin
+  esum := 0;
+  osum := 0;
+  even := true; // Last char even.
+  for var idx :=  ALen downto 1 do
+  begin
+    if even then
+    begin
+      even := false;
+      inc(esum, ADigits[idx]);
+    end
+    else
+    begin
+      even := true;
+      inc(osum, ADigits[idx]);
+    end;
+  end;
+  if AMode = TEanMode.Standard then
+  begin
+    sum := ((3*esum) + osum);
+    result := (10 - (sum mod 10)) mod 10;
+  end
+  else
+  begin
+    sum := (3*esum) + (9*osum);
+    result := sum mod 10
+  end;
+end;
+
+const
+  // UPCE Checksum tool.
+  // Duplicating for convenience.
+  // Since the checksum is done on the expanded UPCE->UPCA version... this short-cuts that.
+  // + = Even Total
+  // - = Odd Total
+  // _ = Skipped
+  CUPCE_Check : array[0..9] of string =
+  (
+    {N}
+    // SabcdeNX -> SabN0000cdeX (0<= N <= 2)
+    {0}'+-++-+-',
+    {1}'+-++-+-',
+    {2}'+-++-+-',
+    // Sabcde3X -> Sabc00000deX ( N = 3 )
+    {3}'+-+--+_',
+    // Sabcde4X -> Sabcd00000eX ( N = 4 )
+    {4}'+-+-++_',
+    // SabcdeNX -> Sabcde0000NX ( 5 <= N <= 9 )
+    {5}'+-+-+-+',
+    {6}'+-+-+-+',
+    {7}'+-+-+-+',
+    {8}'+-+-+-+',
+    {9}'+-+-+-+'
+  );
+
+class function TStBarcode.DoGetCheckCharacters(AType : TStBarCodeType; const ADigits : TStDigitArray; ALen : integer; var C, K : integer) : TStCheckResult;
 var
   I  : Integer;
   C1 : Integer;
   C2 : Integer;
-  St : string;
 begin
   C := -1;
   K := -1;
-  St := S;
-  case FBarCodeType of
-    bcUPC_A :
+
+  case AType of
+    TStBarcodeType.UPC_A :
+      if ALen < 11 then
+        result := TStCheckResult.Invalid
+      else
       begin
-        if Length(St) >= 11 then begin
-          {get digits}
-          GetDigits(St);
-          {determine check character}
-          C1 := (bcDigits[1] + bcDigits[3] + bcDigits[5] + bcDigits[7] +
-                 bcDigits[9] + bcDigits[11]) * 3;
-          C2 := bcDigits[2] + bcDigits[4] + bcDigits[6] +
-                bcDigits[8] + bcDigits[10];
-          C := 10 - ((C1 + C2) mod 10);
-          if C = 10 then
-            C := 0;
-        end;
+        C := EANChecksum(ADigits, 11, TEanMode.Standard);
+        if ALen = 11 then
+          result := TStCheckResult.Added
+        else if ADigits[12] = C then
+          result := TStCheckResult.Match
+        else
+          result := TStCheckResult.Mismatch;
       end;
-    bcUPC_E :
+    TStBarcodeType.UPC_E:
+      if ALen < 7 then
+        result := TStCheckResult.Invalid
+      else
       begin
-        {get digits}
-        GetDigits(St);
         {determine check character}
-        C1 := (bcDigits[2] + bcDigits[4] + bcDigits[6]) * 3;
-        C2 := bcDigits[1] + bcDigits[3] + bcDigits[5];
-        C := 10 - ((C1 + C2) mod 10);
+        c1 := 0;
+        c2 := 0;
+        // UPC_E checksum is calculated on its expanded UPCA version.
+        var pattern := CUPCE_Check[ADigits[7]];
+        for var idx := 1 to length(pattern) do
+        begin
+          case pattern[idx] of
+            '+': inc(c1, ADigits[idx]);
+            '-': inc(c2, ADigits[idx]);
+          end;
+        end;
+        C := 10 - (((c1*3) +c2) mod 10);
         if C = 10 then
           C := 0;
+        if ALen = 7 then
+          result := TStCheckResult.Added
+        else if ADigits[8] = C then
+          result := TStCheckResult.Match
+        else
+          result := TStCheckResult.Mismatch;
       end;
-    bcEAN_8 :
+    TStBarcodeType.EAN_8 :
+      if ALen < 7 then
+        result := TStCheckResult.Invalid
+      else
       begin
-        if Length(St) >= 7 then begin
-          {get digits}
-          GetDigits(St);
-          {determine check character}
-          C1 := (bcDigits[1] + bcDigits[3] + bcDigits[5] + bcDigits[7]) * 3;
-          C2 := bcDigits[2] + bcDigits[4] + bcDigits[6];
-          C := 10 - ((C1 + C2) mod 10);
-          if C = 10 then
-            C := 0;
-        end;
+        C := EANChecksum(ADigits, 7, TEanMode.Standard);
+        if ALen = 7 then
+          result := TStCheckResult.Added
+        else if ADigits[8] = C then
+          result := TStCheckResult.Match
+        else
+          result := TStCheckResult.Mismatch;
       end;
-    bcEAN_13 :
+    TStBarcodeType.EAN_13 :
+      if ALen < 12 then
+        result := TStCheckResult.Invalid
+      else
       begin
-        if Length(St) >= 12 then begin
-          {get digits}
-          GetDigits(St);
-          {determine check character}
-          C1 := (bcDigits[2] + bcDigits[4] + bcDigits[6] + bcDigits[8] +
-                 bcDigits[10] + bcDigits[12]) * 3;
-          C2 := bcDigits[1] + bcDigits[3] + bcDigits[5] + bcDigits[7] +
-                bcDigits[9] + bcDigits[11];
-          C := 10 - ((C1 + C2) mod 10);
-          if C = 10 then
-            C := 0;
-        end;
+        C := EANChecksum(ADigits, 12, TEanMode.Standard);
+        if ALen = 12 then
+          result := TStCheckResult.Added
+        else if ADigits[13] = C then
+          result := TStCheckResult.Match
+        else
+          result := TStCheckResult.Mismatch;
       end;
-    bcInterleaved2of5 :
+    TStBarcodeType.Interleaved2of5 :
       begin
         {get digits}
-        bcDigitCount := GetDigits(St);
-
         C1 := 0;
         C2 := 0;
-        for I := 1 to bcDigitCount do
+        for I := 1 to ALen do
           if Odd(I) then
-            C1 := C1 + bcDigits[I]  {odd digits}
+            C1 := C1 + ADigits[I]  {odd digits}
           else
-            C2 := C2 + bcDigits[I]; {even digits}
+            C2 := C2 + ADigits[I]; {even digits}
         C2 := C2 * 3;
 
         C := 10 - ((C1 + C2) mod 10);
         if C = 10 then
           C := 0;
+        result := TStCheckResult.Added
       end;
-    bcCodabar :
+    TStBarcodeType.Codabar :
       begin
         {get digits}
-        bcDigitCount := GetDigits(St);
-
         C1 := 0;
-        for I := 1 to bcDigitCount do
-          C1 := C1 + bcDigits[I];
+        for I := 1 to ALen do
+          C1 := C1 + ADigits[I];
 
         C := 16 - (C1 mod 16);
         if C = 16 then
           C := 0;
+        result := TStCheckResult.Added
       end;
-    bcCode11 :
+    TStBarcodeType.Code11 :
       begin
         {get digits}
-        bcDigitCount := GetDigits(St);
         C1 := 0;
-        for I := bcDigitCount downto 1 do
-          C1 := C1 + bcDigits[I]*(bcDigitCount-I+1);
+        for I := ALen downto 1 do
+          C1 := C1 + ADigits[I]*(ALen-I+1);
         C1 := C1 mod 11; {the "C" check character}
         C2 := C1;
-        for I := bcDigitCount downto 1 do
-          C2 := C2 + bcDigits[I]*(bcDigitCount-I+2);
+        for I := ALen downto 1 do
+          C2 := C2 + ADigits[I]*(ALen-I+2);
         C2 := C2 mod 11; {the "K" check character}
         K := C2;
         C := C1;
+        result := TStCheckResult.Added
       end;
-    bcCode39 :
+    TStBarcodeType.Code39 :
       begin
         {get digits}
-        bcDigitCount := GetDigits(St);
-
         C1 := 0;
-        for I := 1 to bcDigitCount do
-          C1 := C1 + bcDigits[I];
+        for I := 1 to ALen do
+          C1 := C1 + ADigits[I];
 
         C := 43 - (C1 mod 43);
         if C = 43 then
           C := 0;
+        result := TStCheckResult.Added
       end;
-    bcCode93 :
+    TStBarcodeType.Code93 :
       begin
         {get digits}
-        bcDigitCount := GetDigits(St);
         C1 := 0;
-        for I := bcDigitCount downto 1 do
-          C1 := C1 + bcDigits[I]*(bcDigitCount-I+1);
+        for I := ALen downto 1 do
+          C1 := C1 + ADigits[I]*(ALen-I+1);
         C1 := C1 mod 47; {the "C" check character}
         C2 := C1;
-        for I := bcDigitCount downto 1 do
-          C2 := C2 + bcDigits[I]*(bcDigitCount-I+2);
+        for I := ALen downto 1 do
+          C2 := C2 + ADigits[I]*(ALen-I+2);
         C2 := C2 mod 47; {the "K" check character}
         K := C2;
         C := C1;
+        result := TStCheckResult.Added
       end;
-    bcCode128 :
+    TStBarcodeType.Code128A,
+    TStBarcodeType.Code128B,
+    TStBarcodeType.Code128C,
+    TStBarcodeType.Code128 :
       begin
         {get digits}
-        bcDigitCount := GetDigits(St);
-
-        C1 := bcDigits[1];
-        for I := 2 to bcDigitCount do
-          C1 := C1 + bcDigits[I]*(I-1);
+        C1 := ADigits[1];
+        for I := 2 to ALen do
+          C1 := C1 + ADigits[I]*(I-1);
 
         C := C1 mod 103;
         if C = 103 then
           C := 0;
+        result := TStCheckResult.Added;
       end;
+  else
+    result := TStCheckResult.None;
   end;
 end;
 
-function TStBarCode.GetCode : string;
+function TStBarcode.GetCode : string;
 begin
-  Result := Text;
+  Result := FText;
 end;
 
-function TStBarCode.GetDigits(Characters : string) : Integer;
+function TStBarcode.GetDigits(Characters : string) : Integer;
+begin
+  result := GetDigits(FBarCodeType, Characters, bcDigits);
+  bcDigitCount := result;
+end;
 
-  procedure GetACode128CDigit (c : Char; var Index : Integer;
-                               var bcDigitPos : Integer);
+function TStBarcode.GetDigits(AType : TStBarCodeType; Characters : string; var ADigits : TStDigitArray) : Integer;
+begin
+  result := GetDigits(AType, Characters, ExtendedSyntax, ADigits);
+end;
+
+class function TStBarcode.GetDigits(AType : TStBarCodeType; Characters : string; AExtendedSyntax : boolean; var ADigits : TStDigitArray) : Integer;
+
+  procedure GetACode128CDigit (c : Char; var Index : Integer; var bcDigitPos : Integer);
   var
     J : Integer;
-
   begin
-    case c of
-      #130     : bcDigits[bcDigitPos + 1] := 98;  {rest are manufactured characters}
-      #131     : bcDigits[bcDigitPos + 1] := 97;
-      #132     : bcDigits[bcDigitPos + 1] := 96;
-      #133     : bcDigits[bcDigitPos + 1] := 98;
-      #134     : bcDigits[bcDigitPos + 1] := 100;
-      #135     : bcDigits[bcDigitPos + 1] := 99;
-      #136     : bcDigits[bcDigitPos + 1] := 103;
-      #137     : bcDigits[bcDigitPos + 1] := 104;
-      #138     : bcDigits[bcDigitPos + 1] := 105;
-      #139     : bcDigits[bcDigitPos + 1] := 106;
+    case (c) of
+      #130     : ADigits[bcDigitPos + 1] := 98;  {rest are manufactured characters}
+      #131     : ADigits[bcDigitPos + 1] := 97;
+      #132     : ADigits[bcDigitPos + 1] := 96;
+      #133     : ADigits[bcDigitPos + 1] := 98;
+      #134     : ADigits[bcDigitPos + 1] := 100;
+      #135     : ADigits[bcDigitPos + 1] := 99;
+      #136     : ADigits[bcDigitPos + 1] := 103;
+      #137     : ADigits[bcDigitPos + 1] := 104;
+      #138     : ADigits[bcDigitPos + 1] := 105;
+      #139     : ADigits[bcDigitPos + 1] := 106;
     else
       try
-        J := StrToInt (Copy (Characters, Index, 2));
-        bcDigits[bcDigitPos + 1] := J;
+        J := StrToInt(Copy (Characters, Index, 2));
+        ADigits[bcDigitPos + 1] := J;
         Inc (Index);
       except
         RaiseStError(EStBarCodeError, stscInvalidCharacter);
@@ -1779,60 +2427,55 @@ function TStBarCode.GetDigits(Characters : string) : Integer;
                                 var bcDigitPos : Integer);
   begin
     case c of
-      ' '      : bcDigits[bcDigitPos + 1] := 0;
-      '!'      : bcDigits[bcDigitPos + 1] := 1;
-      '"'      : bcDigits[bcDigitPos + 1] := 2;
-      '#'      : bcDigits[bcDigitPos + 1] := 3;
-      '$'      : bcDigits[bcDigitPos + 1] := 4;
-      '%'      : bcDigits[bcDigitPos + 1] := 5;
-      '&'      : bcDigits[bcDigitPos + 1] := 6;
-      ''''     : bcDigits[bcDigitPos + 1] := 7;
-      '('      : bcDigits[bcDigitPos + 1] := 8;
-      ')'      : bcDigits[bcDigitPos + 1] := 9;
-      '*'      : bcDigits[bcDigitPos + 1] := 10;
-      '+'      : bcDigits[bcDigitPos + 1] := 11;
-      ','      : bcDigits[bcDigitPos + 1] := 12;
-      '-'      : bcDigits[bcDigitPos + 1] := 13;
-      '.'      : bcDigits[bcDigitPos + 1] := 14;
-      '/'      : bcDigits[bcDigitPos + 1] := 15;
-      '0'..'9' : bcDigits[bcDigitPos + 1] := 16 + Ord(c)-Ord('0');
-      ':'      : bcDigits[bcDigitPos + 1] := 26;
-      ';'      : bcDigits[bcDigitPos + 1] := 27;
-      '<'      : bcDigits[bcDigitPos + 1] := 28;
-      '='      : bcDigits[bcDigitPos + 1] := 29;
-      '>'      : bcDigits[bcDigitPos + 1] := 30;
-      '?'      : bcDigits[bcDigitPos + 1] := 31;
-      '@'      : bcDigits[bcDigitPos + 1] := 32;
-      'A'..'Z' : bcDigits[bcDigitPos + 1] := 33 + Ord(c)-Ord('A');
-      '['      : bcDigits[bcDigitPos + 1] := 59;
-      '\'      : bcDigits[bcDigitPos + 1] := 60;
-      ']'      : bcDigits[bcDigitPos + 1] := 61;
-      '^'      : bcDigits[bcDigitPos + 1] := 62;
-      '_'      : bcDigits[bcDigitPos + 1] := 63;
-      #0, #31  : bcDigits[bcDigitPos + 1] := 64 + Ord(c);  {control characters}
-      '`'      : bcDigits[bcDigitPos + 1] := 64;
-      'a'..'z' : bcDigits[bcDigitPos + 1] := 65 + Ord(c)-Ord('a');
-      '{'      : bcDigits[bcDigitPos + 1] := 91;
-      '|'      : bcDigits[bcDigitPos + 1] := 92;
-      '}'      : bcDigits[bcDigitPos + 1] := 93;
-      '~'      : bcDigits[bcDigitPos + 1] := 94;
-      else
-      begin
-        case C of
-          #130     : bcDigits[bcDigitPos + 1] := 98; {rest are manufactured characters}
-          #131     : bcDigits[bcDigitPos + 1] := 97;
-          #132     : bcDigits[bcDigitPos + 1] := 96;
-          #133     : bcDigits[bcDigitPos + 1] := 98;
-          #134     : bcDigits[bcDigitPos + 1] := 100;
-          #135     : bcDigits[bcDigitPos + 1] := 99;
-          #136     : bcDigits[bcDigitPos + 1] := 103;
-          #137     : bcDigits[bcDigitPos + 1] := 104;
-          #138     : bcDigits[bcDigitPos + 1] := 105;
-          #139     : bcDigits[bcDigitPos + 1] := 106;
-        else
-          RaiseStError(EStBarCodeError, stscInvalidCharacter);
-        end;
-      end;
+      ' '      : ADigits[bcDigitPos + 1] := 0;
+      '!'      : ADigits[bcDigitPos + 1] := 1;
+      '"'      : ADigits[bcDigitPos + 1] := 2;
+      '#'      : ADigits[bcDigitPos + 1] := 3;
+      '$'      : ADigits[bcDigitPos + 1] := 4;
+      '%'      : ADigits[bcDigitPos + 1] := 5;
+      '&'      : ADigits[bcDigitPos + 1] := 6;
+      ''''     : ADigits[bcDigitPos + 1] := 7;
+      '('      : ADigits[bcDigitPos + 1] := 8;
+      ')'      : ADigits[bcDigitPos + 1] := 9;
+      '*'      : ADigits[bcDigitPos + 1] := 10;
+      '+'      : ADigits[bcDigitPos + 1] := 11;
+      ','      : ADigits[bcDigitPos + 1] := 12;
+      '-'      : ADigits[bcDigitPos + 1] := 13;
+      '.'      : ADigits[bcDigitPos + 1] := 14;
+      '/'      : ADigits[bcDigitPos + 1] := 15;
+      '0'..'9' : ADigits[bcDigitPos + 1] := 16 + Ord(c)-Ord('0');
+      ':'      : ADigits[bcDigitPos + 1] := 26;
+      ';'      : ADigits[bcDigitPos + 1] := 27;
+      '<'      : ADigits[bcDigitPos + 1] := 28;
+      '='      : ADigits[bcDigitPos + 1] := 29;
+      '>'      : ADigits[bcDigitPos + 1] := 30;
+      '?'      : ADigits[bcDigitPos + 1] := 31;
+      '@'      : ADigits[bcDigitPos + 1] := 32;
+      'A'..'Z' : ADigits[bcDigitPos + 1] := 33 + Ord(c)-Ord('A');
+      '['      : ADigits[bcDigitPos + 1] := 59;
+      '\'      : ADigits[bcDigitPos + 1] := 60;
+      ']'      : ADigits[bcDigitPos + 1] := 61;
+      '^'      : ADigits[bcDigitPos + 1] := 62;
+      '_'      : ADigits[bcDigitPos + 1] := 63;
+      #0, #31  : ADigits[bcDigitPos + 1] := 64 + Ord(c);  {control characters}
+      '`'      : ADigits[bcDigitPos + 1] := 64;
+      'a'..'z' : ADigits[bcDigitPos + 1] := 65 + Ord(c)-Ord('a');
+      '{'      : ADigits[bcDigitPos + 1] := 91;
+      '|'      : ADigits[bcDigitPos + 1] := 92;
+      '}'      : ADigits[bcDigitPos + 1] := 93;
+      '~'      : ADigits[bcDigitPos + 1] := 94;
+      #130     : ADigits[bcDigitPos + 1] := 98; {rest are manufactured characters}
+      #131     : ADigits[bcDigitPos + 1] := 97;
+      #132     : ADigits[bcDigitPos + 1] := 96;
+      #133     : ADigits[bcDigitPos + 1] := 98;
+      #134     : ADigits[bcDigitPos + 1] := 100;
+      #135     : ADigits[bcDigitPos + 1] := 99;
+      #136     : ADigits[bcDigitPos + 1] := 103;
+      #137     : ADigits[bcDigitPos + 1] := 104;
+      #138     : ADigits[bcDigitPos + 1] := 105;
+      #139     : ADigits[bcDigitPos + 1] := 106;
+    else
+      RaiseStError(EStBarCodeError, stscInvalidCharacter);
     end;
     Inc (Index);
     Inc (bcDigitPos);
@@ -1842,7 +2485,8 @@ function TStBarCode.GetDigits(Characters : string) : Integer;
   begin
     Result := 0;
     while (Index <= Length (Characters)) and
-          (Characters[Index] >= '0') and (Characters[Index] <= '9') do begin
+          (Characters[Index] >= '0') and (Characters[Index] <= '9') do
+    begin
       Inc (Result);
       Inc (Index);
     end;
@@ -1854,7 +2498,8 @@ function TStBarCode.GetDigits(Characters : string) : Integer;
   begin
     Result := False;
     NumDigits := CountCode128Digits (Index);
-    if NumDigits mod 2 <> 0 then begin
+    if Odd(NumDigits) then
+    begin
       Characters := Copy (Characters, 1, Index - 1) +
                     '0' + Copy (Characters, Index, CharsLen - Index + 1);
       Result := True;
@@ -1862,6 +2507,8 @@ function TStBarCode.GetDigits(Characters : string) : Integer;
   end;
 
   function GetCode128Digits : Integer;
+  type
+    TStCode128CodeSubset = (csCodeA, csCodeB, csCodeC);
   var
     I             : Integer;
     RLen          : Integer;
@@ -1873,40 +2520,56 @@ function TStBarCode.GetDigits(Characters : string) : Integer;
     I := 1;
     Result := Length (Characters);
     RLen := 0;
-    CurMode := Self.Code128Subset;
-    NeedCharCount := Self.Code128Subset = csCodeC;
+    CurMode := csCodeC;
+    case Atype of
+      TStBarcodeType.Code128A: CurMode := csCodeA;
+      TStBarcodeType.Code128B: CurMode := csCodeB;
+      TStBarcodeType.Code128,
+      TStBarcodeType.Code128C: CurMode := csCodeC;
+    end;
+    NeedCharCount := CurMode = csCodeC;
 
-    while I <= Result do begin
+    while I <= Result do
+    begin
       if (NeedCharCount) and
-         (Characters[I] >= '0') and (Characters[I] <= '9') then begin
+         (Characters[I] >= '0') and (Characters[I] <= '9') then
+      begin
         NeedCharCount := False;
         if CheckCode128Digits (I, Result) then
           Inc (Result);
       end;
 
       Skip := False;
-      if (ExtendedSyntax) and (Characters[I] = '\')  and
-         (I < Result) then begin
+      if (AExtendedSyntax) and (Characters[I] = '\')  and
+         (I < Result) then
+      begin
         if ((Characters[I + 1] = 'A') or (Characters[I + 1] = 'a')) and
-           (CurMode <> csCodeA) then begin
+           (CurMode <> csCodeA) then
+        begin
           Inc (RLen);
-          bcDigits[RLen] := 101;
+          ADigits[RLen] := 101;
           CurMode := csCodeA;
           Skip := True;
-        end else if ((Characters[I + 1] = 'B') or (Characters[I + 1] = 'b')) and
-                    (CurMode <> csCodeB) then begin
+        end
+        else if ((Characters[I + 1] = 'B') or (Characters[I + 1] = 'b')) and
+                    (CurMode <> csCodeB) then
+        begin
           Inc (RLen);
-          bcDigits[RLen] := 100;
+          ADigits[RLen] := 100;
           CurMode :=csCodeB;
           Skip := True;
-        end else if ((Characters[I + 1] = 'C') or (Characters[I + 1] = 'c')) and
-                    (CurMode <> csCodeC) then begin
+        end
+        else if ((Characters[I + 1] = 'C') or (Characters[I + 1] = 'c')) and
+                    (CurMode <> csCodeC) then
+        begin
           NeedCharCount := True;
           Inc (RLen);
-          bcDigits[RLen] := 99;
+          ADigits[RLen] := 99;
           CurMode := csCodeC;
           Skip := True;
-        end else if (Characters[I + 1] = '\') then begin
+        end
+        else if (Characters[I + 1] = '\') then
+        begin
           GetACode128ABDigit ('\', I, RLen);
           Skip := True;
         end;
@@ -1930,83 +2593,87 @@ var
   I, J : Integer;
   S    : string;
 begin
+  FillChar(ADigits, SizeOf(ADigits), #0);
   Result := 0;
 
-  FillChar(bcDigits, SizeOf(bcDigits), #0);
-
-  case FBarCodeType of
-    bcUPC_A, bcUPC_E, bcEAN_8, bcEAN_13, bcInterleaved2of5 :
+  case AType of
+    TStBarcodeType.UPC_A, TStBarcodeType.UPC_E, TStBarcodeType.EAN_8, TStBarcodeType.EAN_13, TStBarcodeType.Interleaved2of5 :
       begin
         Result := Length(Characters);
         for I := 1 to Result do
-          bcDigits[I] := StrToInt(Characters[I]);
+          ADigits[I] := ChToInt(Characters[I]);
       end;
-    bcCodabar :
+    TStBarcodeType.Codabar :
       begin
         Result := Length(Characters);
-        for I := 1 to Result do begin
+        for I := 1 to Result do
+        begin
           case Characters[I] of
-            '0'..'9' : bcDigits[I] := StrToInt(Characters[I]);
-            '-'      : bcDigits[I] := 10;
-            '$'      : bcDigits[I] := 11;
-            ':'      : bcDigits[I] := 12;
-            '/'      : bcDigits[I] := 13;
-            '.'      : bcDigits[I] := 14;
-            '+'      : bcDigits[I] := 15;
-            'A', 'a' : bcDigits[I] := 16;
-            'B', 'b' : bcDigits[I] := 17;
-            'C', 'c' : bcDigits[I] := 18;
-            'D', 'd' : bcDigits[I] := 19;
+            '0'..'9' : ADigits[I] := ChToInt(Characters[I]);
+            '-'      : ADigits[I] := 10;
+            '$'      : ADigits[I] := 11;
+            ':'      : ADigits[I] := 12;
+            '/'      : ADigits[I] := 13;
+            '.'      : ADigits[I] := 14;
+            '+'      : ADigits[I] := 15;
+            'A', 'a' : ADigits[I] := 16;
+            'B', 'b' : ADigits[I] := 17;
+            'C', 'c' : ADigits[I] := 18;
+            'D', 'd' : ADigits[I] := 19;
           else
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
         end;
       end;
-    bcCode11 :
+    TStBarcodeType.Code11 :
       begin
         Result := Length(Characters);
-        for I := 1 to Result do begin
+        for I := 1 to Result do
+        begin
           case Characters[I] of
-            '0'..'9' : bcDigits[I] := StrToInt(Characters[I]);
-            '-'      : bcDigits[I] := 10;
+            '0'..'9' : ADigits[I] := ChToInt(Characters[I]);
+            '-'      : ADigits[I] := 10;
           else
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
         end;
       end;
-    bcCode39 :
+    TStBarcodeType.Code39 :
       begin
         Result := Length(Characters);
-        for I := 1 to Result do begin
+        for I := 1 to Result do
+        begin
           case Characters[I] of
-            '0'..'9' : bcDigits[I] := StrToInt(Characters[I]);
-            'A'..'Z' : bcDigits[I] := Ord(Characters[I]) - Ord('A') + 10;
-            '-'      : bcDigits[I] := 36;
-            '.'      : bcDigits[I] := 37;
-            ' '      : bcDigits[I] := 38;
-            '$'      : bcDigits[I] := 39;
-            '/'      : bcDigits[I] := 40;
-            '+'      : bcDigits[I] := 41;
-            '%'      : bcDigits[I] := 42;
-            '*'      : bcDigits[I] := 43;
+            '0'..'9' : ADigits[I] := ChToInt(Characters[I]);
+            'A'..'Z' : ADigits[I] := Ord(Characters[I]) - Ord('A') + 10;
+            '-'      : ADigits[I] := 36;
+            '.'      : ADigits[I] := 37;
+            ' '      : ADigits[I] := 38;
+            '$'      : ADigits[I] := 39;
+            '/'      : ADigits[I] := 40;
+            '+'      : ADigits[I] := 41;
+            '%'      : ADigits[I] := 42;
+            '*'      : ADigits[I] := 43;
           else
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
         end;
       end;
-    bcCode93 :
+    TStBarcodeType.Code93 :
       begin
         Result := Length(Characters);
         J := 1;
         I := 1;
-        while I <= Result do begin
+        while I <= Result do
+        begin
           S := Code93Map[Characters[I]];
-          if Length(S) > 1 then begin
+          if Length(S) > 1 then
+          begin
             case S[1] of
-              '$' : bcDigits[J] := 43; {(+)}
-              '%' : bcDigits[J] := 44; {(%)}
-              '/' : bcDigits[J] := 45; {(/)}
-              '+' : bcDigits[J] := 46; {(+)}
+              '$' : ADigits[J] := 43; {(+)}
+              '%' : ADigits[J] := 44; {(%)}
+              '/' : ADigits[J] := 45; {(/)}
+              '+' : ADigits[J] := 46; {(+)}
             else
               RaiseStError(EStBarCodeError, stscInvalidCharacter);
             end;
@@ -2015,15 +2682,15 @@ begin
           end;
 
           case S[1] of
-            '0'..'9' : bcDigits[J] := Ord(S[1])-Ord('0');
-            'A'..'Z' : bcDigits[J] := 10 + Ord(S[1])-Ord('A');
-            '-'      : bcDigits[J] := 36;
-            '.'      : bcDigits[J] := 37;
-            ' '      : bcDigits[J] := 38;
-            '$'      : bcDigits[J] := 39;
-            '/'      : bcDigits[J] := 40;
-            '+'      : bcDigits[J] := 41;
-            '%'      : bcDigits[J] := 42;
+            '0'..'9' : ADigits[J] := Ord(S[1])-Ord('0');
+            'A'..'Z' : ADigits[J] := 10 + Ord(S[1])-Ord('A');
+            '-'      : ADigits[J] := 36;
+            '.'      : ADigits[J] := 37;
+            ' '      : ADigits[J] := 38;
+            '$'      : ADigits[J] := 39;
+            '/'      : ADigits[J] := 40;
+            '+'      : ADigits[J] := 41;
+            '%'      : ADigits[J] := 42;
           else
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
@@ -2032,322 +2699,160 @@ begin
         end;
         Result := J;
       end;
-    bcCode128 :
+    TStBarcodeType.Code128A,
+    TStBarcodeType.Code128B,
+    TStBarcodeType.Code128C,
+    TStBarcodeType.Code128 :
       Result := GetCode128Digits;
   end;
 end;
 
-function TStBarCode.GetVersion : string;
+procedure TStBarcode.SetAddCheckChar(Value : Boolean);
 begin
-  Result := StVersionStr;
-end;
-
-procedure TStBarCode.Loaded;
-begin
-  inherited Loaded;
-
-  CalcBarCode;
-end;
-
-procedure TStBarCode.Paint;
-var
-  Margin : Integer;
-  R      : TRect;
-begin
-  {use our font}
-  Canvas.Font := Font;
-
-  {clear the canvas}
-  Canvas.Brush.Color := Color;
-  Canvas.Brush.Style := bsSolid;
-  Canvas.FillRect(ClientRect);
-
-  {adjust height of rect to provide top and bottom margin}
-  R := ClientRect;
-  Margin := RectHeight(R)*10 div 100;
-  InflateRect(R, 0, -Margin);
-  PaintPrim(R);
-end;
-
-procedure TStBarCode.PaintPrim(const R : TRect);
-begin
-  Canvas.Brush.Style := bsClear;
-  Canvas.Brush.Color := FBarColor;
-  Canvas.Pen.Color := FBarColor;
-  DrawBarCode(R);
-end;
-
-procedure TStBarCode.PaintToCanvas(ACanvas : TCanvas; ARect : TRect);
-var
-  Margin  : Integer;
-  SavedDC : Integer;
-  R       : TRect;
-begin
-  Canvas.Handle := ACanvas.Handle;
-  SavedDC := SaveDC(ACanvas.Handle);
-  try
-    {use our font}
-    Canvas.Font := Font;
-
-    {clear the specified area of the canvas}
-    Canvas.Brush.Color := Color;
-    Canvas.Brush.Style := bsSolid;
-    Canvas.FillRect(ARect);
-
-    {adjust height of rect to provide top and bottom margin}
-    R := ARect;
-    Margin := RectHeight(R)*10 div 100;
-    InflateRect(R, 0, -Margin);
-    PaintPrim(R);
-  finally
-    Canvas.Handle := 0;
-    RestoreDC(ACanvas.Handle, SavedDC);
-  end;
-end;
-
-procedure TStBarCode.PaintToCanvasSize(ACanvas : TCanvas; X, Y, H : Double);
-var
-  TH             : Integer;
-  PixelsPerInchX : Integer;
-  PixelsPerInchY : Integer;
-  OldPPI         : Integer;
-  SavedDC        : Integer;
-  R              : TRect;
-  SmallestWidth  : Double;
-begin
-  Canvas.Handle := ACanvas.Handle;
-  SavedDC := SaveDC(ACanvas.Handle);
-  try
-    {get some information about this device context}
-    PixelsPerInchX := GetDeviceCaps(Canvas.Handle, LOGPIXELSX);
-    PixelsPerInchY := GetDeviceCaps(Canvas.Handle, LOGPIXELSY);
-
-    OldPPI := Canvas.Font.PixelsPerInch;
-    {this is necessary because of a Delphi buglet}
-    Canvas.Font.PixelsPerInch := PixelsPerInchY;
-
-    {use our font}
-    Canvas.Font := Font;
-
-    {determine narrowest line width}
-    SmallestWidth := SmallestLineWidth(PixelsPerInchX);
-
-    {find sizes for the BarCode elements}
-    bcBarModWidth := Round(FBarWidth/1000 * PixelsPerInchX);
-    if bcBarModWidth < FBarToSpaceRatio then
-      bcBarModWidth := Round(FBarToSpaceRatio);
-    if bcBarModWidth < SmallestWidth then
-      bcBarModWidth := Round(SmallestWidth);
-    bcSpaceModWidth := Round(bcBarModWidth / FBarToSpaceRatio);
-    CalcBarCodeWidth;
-
-    {convert to a rect}
-    R := Rect(Round(X * PixelsPerInchX),
-              Round(Y * PixelsPerInchY),
-              Round(X * PixelsPerInchX) + bcNormalWidth + bcSpaceWidth + bcSupplementWidth,
-              Round((Y + H) * PixelsPerInchY));
-
-    {increase height of rect to allow for text}
-    if FShowCode and (Code > '') then begin
-      TH :=Canvas.TextHeight(Code);
-      Inc(R.Bottom, TH + (TH div 4));
-    end;
-
-    PaintPrim(R);
-    Canvas.Font.PixelsPerInch := OldPPI;
-    Invalidate;
-  finally
-    Canvas.Handle := 0;
-    RestoreDC(ACanvas.Handle, SavedDC);
-  end;
-end;
-
-procedure TStBarCode.PaintToDC(DC : hDC; ARect : TRect);
-var
-  Margin  : Integer;
-  SavedDC : Integer;
-  R       : TRect;
-begin
-  Canvas.Handle := DC;
-  SavedDC := SaveDC(DC);
-  try
-    {use our font}
-    Canvas.Font := Font;
-
-    {clear the specified area of the canvas}
-    Canvas.Brush.Color := Color;
-    Canvas.Brush.Style := bsSolid;
-    Canvas.FillRect(ARect);
-
-    {adjust height of rect to provide top and bottom margin}
-    R := ARect;
-    Margin := RectHeight(R)*10 div 100;
-    InflateRect(R, 0, -Margin);
-    PaintPrim(R);
-  finally
-    Canvas.Handle := 0;
-    RestoreDC(DC, SavedDC);
-  end;
-end;
-
-procedure TStBarCode.PaintToDCSize(DC : hDC; X, Y, W, H : Double);
-begin
-  Canvas.Handle := DC;
-  PaintToCanvasSize(Canvas, X, Y, H);
-end;
-
-procedure TStBarCode.SaveToFile(const FileName : string);
-var
-  Bitmap : TBitmap;
-begin
-  Bitmap := TBitmap.Create;
-  try
-    Bitmap.Width := ClientWidth;
-    Bitmap.Height := ClientHeight;
-    PaintToDC(Bitmap.Canvas.Handle, ClientRect);
-    Bitmap.SaveToFile(FileName);
-  finally
-    Bitmap.Free;
-  end
-end;
-
-procedure TStBarCode.SetAddCheckChar(Value : Boolean);
-begin
-  if Value <> FAddCheckChar then begin
+  if Value <> FAddCheckChar then
+  begin
     FAddCheckChar := Value;
-    CalcBarCode;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetBarCodeType(Value : TStBarCodeType);
+procedure TStBarcode.SetBarCodeType(Value : TStBarCodeType);
 begin
-  if Value <> FBarCodeType then begin
+  if Value <> FBarCodeType then
+  begin
     FBarCodeType := Value;
-    CalcBarCode;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetBarColor(Value : TColor);
-begin
-  if Value <> FBarColor then begin
-    FBarColor := Value;
-    Invalidate;
-  end;
-end;
-
-procedure TStBarCode.SetBarToSpaceRatio(Value : Double);
+procedure TStBarcode.SetBarToSpaceRatio(Value : Double);
 begin
   {always uses a bar to space ratio of 1}
-  if FBarCodeType in [bcInterleaved2of5, bcCode11, bcCode39, bcCode93, bcCode128] then
+
+  if FBarCodeType in [TStBarcodeType.Interleaved2of5, TStBarcodeType.Code11, TStBarcodeType.Code39, TStBarcodeType.Code93, TStBarcodeType.Code128, TStBarcodeType.Code128A, TStBarcodeType.Code128B, TStBarcodeType.Code128C] then
     Value := 1;
 
-  if Value <> FBarToSpaceRatio then begin
+  if Value <> FBarToSpaceRatio then
+  begin
     FBarToSpaceRatio := Value;
-    CalcBarCode;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetBarNarrowToWideRatio(Value : Integer);
+procedure TStBarcode.SetBarNarrowToWideRatio(Value : Integer);
 begin
-  if Value <> FBarNarrowToWideRatio then begin
+  if Value <> FBarNarrowToWideRatio then
+  begin
     FBarNarrowToWideRatio := Value;
-    CalcBarCode;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetBarWidth(Value : Double);
+procedure TStBarcode.SetBarWidth(Value : Double);
 begin
-  if Value <> FBarWidth then begin
+  if Value <> FBarWidth then
+  begin
     FBarWidth := Value;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetBearerBars(Value : Boolean);
+procedure TStBarcode.SetBearerBars(Value : Boolean);
 begin
-  if Value <> FBearerBars then begin
+  if Value <> FBearerBars then
+  begin
     FBearerBars := Value;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetCode(const Value : string);
+procedure TStBarcode.SetCode(const Value : string);
 begin
-  if FBarCodeType in [bcCode39] then
-    Text := UpperCase(Value)
-  else if FBarCodeType in [bcCodabar] then
-    Text := LowerCase(Value)
+  var newText : String;
+  if FBarCodeType in [TStBarcodeType.Code39] then
+    newText := UpperCase(Value)
+  else if FBarCodeType in [TStBarcodeType.Codabar] then
+    newText := LowerCase(Value)
   else
-    Text := Value;
-end;
-
-procedure TStBarCode.SetCode128Subset(Value : TStCode128CodeSubset);
-begin
-  if Value <> FCode128Subset then begin
-    FCode128Subset := Value;
-    CalcBarCode;
-    Invalidate;
+    newText := Value;
+  if newText <> FText then
+  begin
+    FText := newText;
+    bcDirty := true;
   end;
 end;
 
-procedure TStBarCode.SetExtendedSyntax (const v : Boolean);
+procedure TStBarcode.SetExtendedSyntax (const v : Boolean);
 begin
-  if v <> FExtendedSyntax then begin
+  if v <> FExtendedSyntax then
+  begin
     FExtendedSyntax := v;
-    CalcBarCode;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetShowCode(Value : Boolean);
+procedure TStBarcode.SetShowCode(Value : Boolean);
 begin
-  if Value <> FShowCode then begin
+  if Value <> FShowCode then
+  begin
     FShowCode := Value;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetShowGuardChars(Value : Boolean);
+procedure TStBarcode.SetShowGuardChars(Value : Boolean);
 begin
-  if Value <> FShowGuardChars then begin
+  if Value <> FShowGuardChars then
+  begin
     FShowGuardChars := Value;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetSupplementalCode(const Value : string);
+procedure TStBarcode.SetSupplementalCode(const Value : string);
 begin
-  if Value <> FSupplementalCode then begin
+  if Value <> FSupplementalCode then
+  begin
     FSupplementalCode := Value;
-    CalcBarCode;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetTallGuardBars(Value : Boolean);
+procedure TStBarcode.SetTallGuardBars(Value : Boolean);
 begin
-  if Value <> FTallGuardBars then begin
+  if Value <> FTallGuardBars then
+  begin
     FTallGuardBars := Value;
     Invalidate;
   end;
 end;
 
-procedure TStBarCode.SetVersion(const Value : string);
+procedure TStBarcode.SetVersion(const Value : string);
 begin
 end;
 
-function TStBarCode.SmallestLineWidth(PixelsPerInch : Integer) : Double;
+function TStBarcode.SmallestLineWidth : Double;
 begin
-  Result := PixelsPerInch * 0.010; {10 mils}
-  if Result < 1 then
-    Result := 1;
+  case FBarCodeType of
+    TStBarCodeType.UPC_E,
+    TStBarCodeType.EAN_8:result := 0.33;
+    TStBarCodeType.UPC_A,
+    TStBarCodeType.EAN_13: result := 0.26;
+    //TStBarCodeType.Interleaved2of5: ;
+    //TStBarCodeType.Codabar: ;
+    //TStBarCodeType.Code11: ;
+    //TStBarCodeType.Code39: ;
+    //TStBarCodeType.Code93: ;
+    TStBarCodeType.Code128,
+    TStBarCodeType.Code128C,
+    TStBarCodeType.Code128A,
+    TStBarCodeType.Code128B: result := 0.19;
+  else
+    Result := 0.265;
+  end;
 end;
 
-function TStBarCode.Validate(DisplayError : Boolean) : Boolean;
+function TStBarcode.Validate(DisplayError : Boolean) : Boolean;
 var
   I      : Integer;
   CheckC : Integer;
@@ -2356,7 +2861,7 @@ begin
   Result := True;
   try
     case FBarCodeType of
-      bcUPC_A :
+      TStBarcodeType.UPC_A :
         begin
           {11 or 12 characters}
           if not (Length(Code) in [11, 12]) then
@@ -2367,22 +2872,29 @@ begin
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
 
-          GetCheckCharacters(Code, CheckC, CheckK);
+          DoGetCheckCharacters(FBarCodeType, bcDigits, bcDigitCount, CheckC, CheckK);
           if (Length(Code) = 12) and (CheckC <> bcDigits[12]) then
             RaiseStError(EStBarCodeError, stscInvalidCheckCharacter);
         end;
-      bcUPC_E :
+      TStBarcodeType.UPC_E :
         begin
-          {6 characters}
-          if not (Length(Code) = 6) then
-            RaiseStError(EStBarCodeError, stscInvalidUPCACodeLen);
+          if not (Length(Code) in [7..8]) then
+            RaiseStError(EStBarCodeError, stscInvalidUPCECodeLen);
           try
             GetDigits(Code);
+            if Length(Code) = 8 then
+            begin
+              DoGetCheckCharacters(FBarCodeType, bcDigits, bcDigitCount, CheckC, CheckK);
+              if (Length(Code) = 8) and (CheckC <> bcDigits[8]) then
+                RaiseStError(EStBarCodeError, stscInvalidCheckCharacter);
+            end;
           except
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
+          if not (bcDigits[1] in [0,1]) then
+            RaiseStError(EStBarCodeError, stscInvalidUPCECodeLen);
         end;
-      bcEAN_8 :
+      TStBarcodeType.EAN_8 :
         begin
           {7 or 8 characters}
           if not (Length(Code) in [7, 8]) then
@@ -2393,11 +2905,11 @@ begin
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
 
-          GetCheckCharacters(Code, CheckC, CheckK);
+          DoGetCheckCharacters(FBarCodeType, bcDigits, bcDigitCount, CheckC, CheckK);
           if (Length(Code) = 8) and (CheckC <> bcDigits[8]) then
             RaiseStError(EStBarCodeError, stscInvalidCheckCharacter);
         end;
-      bcEAN_13 :
+      TStBarcodeType.EAN_13 :
         begin
           {12 or 13 characters}
           if not (Length(Code) in [12, 13]) then
@@ -2408,11 +2920,11 @@ begin
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
 
-          GetCheckCharacters(Code, CheckC, CheckK);
+          DoGetCheckCharacters(FBarCodeType, bcDigits, bcDigitCount, CheckC, CheckK);
           if (Length(Code) = 13) and (CheckC <> bcDigits[13]) then
             RaiseStError(EStBarCodeError, stscInvalidCheckCharacter);
         end;
-      bcInterleaved2of5 :
+      TStBarcodeType.Interleaved2of5 :
         begin
           try
             GetDigits(Code);
@@ -2420,37 +2932,53 @@ begin
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
         end;
-      bcCodabar :
+      TStBarcodeType.Codabar :
         begin
           for I := 1 to Length(Code) do
-            if not CharInSet(Code[I], ['0'..'9', '-', '$', ':', '/', '.', '+', 'a'..'d', 'A'..'D']) then
+          begin
+            case Code[I] of
+              '0'..'9', '-', '$', ':', '/', '.', '+', 'a'..'d', 'A'..'D': ;
+            else
               RaiseStError(EStBarCodeError, stscInvalidCharacter);
+            end;
+          end;
         end;
-      bcCode11 :
+      TStBarcodeType.Code11 :
         begin
           for I := 1 to Length(Code) do
-            if not CharInSet(Code[I], ['0'..'9', '-']) then
+          begin
+            case Code[I] of
+              '0'..'9', '-': ;
+            else
               RaiseStError(EStBarCodeError, stscInvalidCharacter);
+            end;
+          end;
           {test check characters}
-          if not FAddCheckChar then begin
+          if not FAddCheckChar then
+          begin
             GetCheckCharacters(Code, CheckC, CheckK);
-            if (StrToInt(Code[Length(Code)-1]) <> CheckC) or
-               (StrToInt(Code[Length(Code)]) <> CheckK) then
+            if (ChToInt(Code[Length(Code)-1]) <> CheckC) or
+               (ChToInt(Code[Length(Code)]) <> CheckK) then
               RaiseStError(EStBarCodeError, stscInvalidCheckCharacter);
           end;
         end;
-      bcCode39 :
+      TStBarcodeType.Code39 :
         begin
           for I := 1 to Length(Code) do
-            if not CharInSet(Code[I], ['0'..'9', 'A'..'Z', 'a'..'z',
-            '-', '.', ' ', '$', '/', '+', '%', '*']) then
+          begin
+            case Code[I] of
+              '0'..'9', 'A'..'Z', 'a'..'z',
+              '-', '.', ' ', '$', '/', '+', '%', '*': ;
+            else
               RaiseStError(EStBarCodeError, stscInvalidCharacter);
+            end;
+          end;
           {check for embedded guard character}
           for I := 2 to Length(Code)-1 do
             if Code[I] = '*' then
               RaiseStError(EStBarCodeError, stscInvalidCharacter);
         end;
-      bcCode93 :
+      TStBarcodeType.Code93 :
         begin
           try
             GetCheckCharacters(Code, CheckC, CheckK);
@@ -2458,7 +2986,10 @@ begin
             RaiseStError(EStBarCodeError, stscInvalidCharacter);
           end;
         end;
-      bcCode128 :
+      TStBarcodeType.Code128A,
+      TStBarcodeType.Code128B,
+      TStBarcodeType.Code128C,
+      TStBarcodeType.Code128 :
         begin
           try
             GetCheckCharacters(Code, CheckC, CheckK);
@@ -2476,6 +3007,151 @@ begin
     if DisplayError then
       raise;
   end;
+end;
+
+function TStBarCodeTypeHelper.AsCode : String;
+begin
+  result := _Desc[self].C
+end;
+
+function TStBarCodeTypeHelper.AsDesc : String;
+begin
+  result := _Desc[self].N
+end;
+
+class function TStBarCodeTypeHelper.AsEnumFromCode(const ACode : String; var AVal : TStBarCodeType) : boolean;
+begin
+  result := false;
+  for var idx := low(TStBarCodeType) to high(TStBarCodeType) do
+  begin
+    if SameText(_Desc[idx].C, ACode) then
+    begin
+      AVal := idx;
+      exit(true);
+    end;
+  end;
+end;
+
+class function TStBarCodeTypeHelper.AsEnumFromDesc(const ACode : String; var AVal : TStBarCodeType) : boolean;
+begin
+  result := false;
+  for var idx := low(TStBarCodeType) to high(TStBarCodeType) do
+  begin
+    if SameText(_Desc[idx].N, ACode) then
+    begin
+      AVal := idx;
+      exit(true);
+    end;
+  end;
+end;
+
+procedure TArrayOf<T>.Grow(ANewCount : integer);
+begin
+  SetLength(Farray, System.Math.Max(length(FArray)+ _GrowNumber, ANewCount));
+end;
+
+function TArrayOf<T>.GetValue(AIdx : Integer): T;
+begin
+  if (AIdx < 0) or (AIDX >= FCount) then
+    Raise Exception.CreateFmt('Index %d out of array bounds', [AIDX]);
+  result := FArray[Aidx];
+end;
+
+procedure TArrayOf<T>.SetValue(AIdx : Integer; const NewVal: T);
+begin
+  if (AIdx < 0) or (AIDX >= FCount) then
+    Raise Exception.CreateFmt('Index %d out of array bounds', [AIDX]);
+  FArray[AIDx] := newVal;
+end;
+
+// public definitions
+
+constructor TArrayOf<T>.Create(ACap : integer);
+begin
+  if ACap = 0 then
+    ACap := _GrowNumber;
+  SetLength(FArray, ACap);
+  FCount := 0;
+end;
+
+procedure TArrayOf<T>.Delete(AIdx: integer);
+begin
+  if (AIdx >= 0) and (AIdx < FCount)  then
+  begin
+    for var idx := AIdx to FCount-2 do
+      FArray[idx] := FArray[idx+1];
+    Dec(FCount);
+  end;
+
+end;
+
+class operator TArrayOf<T>.Initialize(out AArray : TArrayOf<T>);
+begin
+  AArray.FCount := 0;
+end;
+
+function TArrayOf<T>.Append(const AVal : T) : integer;
+begin
+  result := FCount;
+  inc(FCount);
+  if result >= length(FArray) then
+    Grow(result);
+  FArray[result] := AVal;
+end;
+
+function TArrayOf<T>.Append(const AArr : TArrayOf<T>) : integer;
+begin
+  Grow(FCount + AArr.FCount);
+  for var idx := 0 to AArr.FCount-1 do
+  begin
+    FArray[FCount] := AArr.FArray[idx];
+    inc(FCount);
+  end;
+  result := FCount;
+end;
+
+function TArrayOf<T>.Add(const AVal : T) : integer;
+begin
+  result := Append(AVal);
+end;
+
+function TArrayOf<T>.AsArray : TArray<T>;
+begin
+  SetLength(FArray, FCount);
+  result := FArray;
+end;
+
+// protected definitions
+
+function TArrayOf<T>.TEnumerator.DoGetCurrent: T;
+begin
+  result := FPArray^[FIndex];
+end;
+
+function TArrayOf<T>.TEnumerator.MoveNext: Boolean;
+begin
+  if FIndex < FPCount^ then
+    Inc(FIndex);
+  result := FIndex < FPCount^;
+end;
+
+constructor TArrayOf<T>.TEnumerator.Create(AArray : PArray; ACount : PInteger);
+begin
+  inherited;
+  FPArray := AArray;
+  FIndex := -1;
+  FPCount := ACount;
+end;
+
+
+function TArrayOf<T>.GetEnumerator: TEnumerator;
+begin
+  result.Create(@FArray, @FCount);
+end;
+
+procedure TArrayOf<T>.Clear;
+begin
+  FCount := 0;
 end;
 
 
