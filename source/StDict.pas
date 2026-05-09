@@ -470,7 +470,7 @@ var
 begin
   Prev := nil;
   This := nil;
-  H := Hash(Name);
+  H := (Hash(Name) and $7FFFFFFF) mod FHashSize;
   T := dySymbols^[H];
   P := nil;
   while Assigned(T) do begin
