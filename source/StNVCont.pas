@@ -101,18 +101,22 @@ implementation
 
 function TStNVContainerBase.GetOnCompare : TStCompareEvent;
 begin
+  Result := nil;
 end;
 
 function TStNVContainerBase.GetOnDisposeData : TStDisposeDataEvent;
 begin
+  Result := nil;
 end;
 
 function TStNVContainerBase.GetOnLoadData : TStLoadDataEvent;
 begin
+  Result := nil;
 end;
 
 function TStNVContainerBase.GetOnStoreData : TStStoreDataEvent;
 begin
+  Result := nil;
 end;
 
 procedure TStNVContainerBase.SetOnCompare(Value : TStCompareEvent);

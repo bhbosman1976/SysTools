@@ -147,10 +147,17 @@ begin
   Result := (B shr 4) or (B shl 4);
 end;
 
-function SwapWord(L : Integer) : Integer; register;
+function SwapWord(L : Integer) : Integer;
+{$IFNDEF CPUARM}
+register;
 asm
   ror eax,16;
 end;
+{$ELSE}
+begin
+  Result := (L shl 16) or ((L shr 16) and $FFFF);
+end;
+{$ENDIF}
 
 procedure SetFlag(var Flags : Word; FlagMask : Word);
 begin
@@ -199,6 +206,7 @@ begin
 end;
 
 procedure ExchangeBytes(var I, J : Byte);
+{$IFNDEF CPUARM}
 register;
 asm
   mov  cl, [eax]
@@ -206,6 +214,15 @@ asm
   mov  [edx], cl
   mov  [eax], ch
 end;
+{$ELSE}
+var
+  lTemp: Byte;
+begin
+  lTemp := I;
+  I := J;
+  J := lTemp;
+end;
+{$ENDIF}
 
 procedure ExchangeLongInts(var I, J : Integer);
 var

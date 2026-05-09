@@ -536,6 +536,7 @@ begin
 end;
 
 function ProductOverflow(A, B : Integer) : Boolean;
+{$IFNDEF CPUARM}
 register;
 asm
   mov ecx,False
@@ -546,7 +547,14 @@ asm
 @1:
   mov eax,ecx
 end;
-
+{$ELSE}
+var
+  lProd: Int64;
+begin
+  lProd := Int64(A) * Int64(B);
+  Result := (lProd < Low(Integer)) or (lProd > High(Integer));
+end;
+{$ENDIF}
 
 {---primitives for converting strings to integers---}
 procedure ValLongInt(S : string; var LI : Integer; var ErrorCode : integer);
